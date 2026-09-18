@@ -314,7 +314,7 @@ async fn a_wrong_path_is_refused_before_the_upgrade_and_not_redialled() {
     let (server, _new_links) = gateway(gateway_config()).await;
     let proxy = Proxy::start(server.local_addr()).await;
     let mut config = node_config(proxy.addr());
-    config.endpoint = format!("ws://{}/elsewhere", proxy.addr());
+    config.endpoints = vec![format!("ws://{}/elsewhere", proxy.addr())];
     let (_node, mut node_events) = NodeLink::start(config).unwrap();
 
     assert!(matches!(
@@ -329,7 +329,7 @@ async fn a_wrong_path_is_refused_before_the_upgrade_and_not_redialled() {
 async fn a_tls_dial_fails_and_redials_rather_than_crashing() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut config = node_config(listener.local_addr().unwrap());
-    config.endpoint = format!("wss://{}", listener.local_addr().unwrap());
+    config.endpoints = vec![format!("wss://{}", listener.local_addr().unwrap())];
     let (node, _node_events) = NodeLink::start(config).unwrap();
     for _ in 0..2 {
         let (socket, _) = within(listener.accept()).await.unwrap();

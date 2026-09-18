@@ -42,7 +42,7 @@ pub fn gateway_config_with_window(window_bytes: usize) -> GatewayConfig {
 
 pub fn node_config(addr: SocketAddr) -> NodeConfig {
     NodeConfig {
-        endpoint: format!("ws://{addr}"),
+        endpoints: vec![format!("ws://{addr}")],
         token: TOKEN.to_owned(),
         keepalive: Duration::from_secs(1),
         backoff_min: Duration::from_millis(5),

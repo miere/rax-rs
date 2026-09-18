@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -81,6 +82,7 @@ impl Default for GatewayConfig {
 /// Stops accepting when dropped; links already handed out keep running until closed.
 pub struct GatewayServer {
     local_addr: SocketAddr,
+    hub: Arc<Hub>,
     accept: JoinHandle<()>,
 }
 
@@ -98,9 +100,32 @@ impl GatewayServer {
             config,
             links: Mutex::new(HashMap::new()),
             new_links,
+            serving: AtomicBool::new(true),
         });
-        let accept = tokio::spawn(accept_loop(listener, hub));
-        Ok((Self { local_addr, accept }, NewLinks { receiver }))
+        let accept = tokio::spawn(accept_loop(listener, hub.clone()));
+        let server = Self {
+            local_addr,
+            hub,
+            accept,
+        };
+        Ok((server, NewLinks { receiver }))
+    }
+
+    /// For a cluster member that stops serving, such as a leader that lost its lease: every
+    /// dial is refused with 503 and every link is closed, so nodes move to another member.
+    pub fn stop_serving(&self) {
+        self.hub.serving.store(false, Ordering::SeqCst);
+        let links: Vec<_> = lock(&self.hub.links)
+            .drain()
+            .map(|(_, link)| link)
+            .collect();
+        for link in links {
+            link.finish(LinkEvent::Closed, Ended::Closed);
+        }
+    }
+
+    pub fn start_serving(&self) {
+        self.hub.serving.store(true, Ordering::SeqCst);
     }
 
     pub fn local_addr(&self) -> SocketAddr {
@@ -137,6 +162,7 @@ pub(crate) struct Hub {
     config: GatewayConfig,
     links: Mutex<HashMap<NodeIdentity, Arc<Shared>>>,
     new_links: mpsc::Sender<NewLink>,
+    serving: AtomicBool,
 }
 
 impl Hub {
@@ -235,6 +261,9 @@ async fn handshake(hub: &Hub, tcp: TcpStream) -> Result<(Socket, NodeIdentity, u
     let callback = |request: &Request, response: Response| {
         if request.uri().path() != PATH {
             return Err(refusal(StatusCode::NOT_FOUND));
+        }
+        if !hub.serving.load(Ordering::SeqCst) {
+            return Err(refusal(StatusCode::SERVICE_UNAVAILABLE));
         }
         let token = request
             .headers()
