@@ -47,7 +47,9 @@ use crate::transfer::{self, Reassembly, Settled, TransferError};
 
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
-    pub endpoint: String,
+    /// Addresses of one gateway cluster, tried in turn: a node stays on the one that last
+    /// answered, and moves to the next when it is unreachable or refuses with a 5xx.
+    pub endpoints: Vec<String>,
     pub token: String,
     pub window_bytes: usize,
     pub ack_threshold: u64,
@@ -65,7 +67,7 @@ pub struct NodeConfig {
 impl Default for NodeConfig {
     fn default() -> Self {
         Self {
-            endpoint: String::new(),
+            endpoints: Vec::new(),
             token: String::new(),
             window_bytes: DEFAULT_WINDOW_BYTES,
             ack_threshold: LinkConfig::default().ack_threshold,
@@ -109,7 +111,14 @@ pub struct NodeLink;
 
 impl NodeLink {
     pub fn start(config: NodeConfig) -> Result<(NodeHandle, NodeEvents), EndpointError> {
-        let endpoint = resolve_endpoint(&config.endpoint)?;
+        if config.endpoints.is_empty() {
+            return Err(EndpointError::Missing);
+        }
+        let endpoints = config
+            .endpoints
+            .iter()
+            .map(|endpoint| resolve_endpoint(endpoint))
+            .collect::<Result<Vec<_>, _>>()?;
         let (events, receiver) = mpsc::channel(config.events_capacity.max(1));
         let shared = Arc::new(Shared {
             core: Core::new(unlinked(&config)),
@@ -120,7 +129,7 @@ impl NodeLink {
             supervisor: Mutex::new(None),
             config,
         });
-        let supervisor = tokio::spawn(supervise(shared.clone(), endpoint, events));
+        let supervisor = tokio::spawn(supervise(shared.clone(), endpoints, events));
         *lock(&shared.supervisor) = Some(supervisor);
         Ok((NodeHandle { shared }, NodeEvents { receiver }))
     }
@@ -326,19 +335,20 @@ enum DialError {
     Closed,
 }
 
-async fn supervise(shared: Arc<Shared>, endpoint: Url, events: mpsc::Sender<NodeEvent>) {
+async fn supervise(shared: Arc<Shared>, endpoints: Vec<Url>, events: mpsc::Sender<NodeEvent>) {
     let config = &shared.config;
-    let mut failures = 0u32;
+    let (mut current, mut failed_in_round, mut failures) = (0usize, 0usize, 0u32);
     loop {
+        let endpoint = &endpoints[current];
         let dialled = tokio::select! {
-            dialled = tokio::time::timeout(config.handshake_timeout, dial(&shared, &endpoint)) => {
+            dialled = tokio::time::timeout(config.handshake_timeout, dial(&shared, endpoint)) => {
                 dialled.unwrap_or(Err(DialError::Timeout))
             }
             _ = shared.shutdown.cancelled() => break,
         };
         match dialled {
             Ok((socket, queue, arrival)) => {
-                failures = 0;
+                (failed_in_round, failures) = (0, 0);
                 if !emit(&shared, &events, arrival).await {
                     break;
                 }
@@ -372,7 +382,13 @@ async fn supervise(shared: Arc<Shared>, endpoint: Url, events: mpsc::Sender<Node
                 break;
             }
             Err(err) => {
-                tracing::warn!(error = %err, "rax dial failed");
+                tracing::warn!(error = %err, %endpoint, "rax dial failed");
+                current = (current + 1) % endpoints.len();
+                failed_in_round += 1;
+                if failed_in_round < endpoints.len() {
+                    continue;
+                }
+                failed_in_round = 0;
                 failures = failures.saturating_add(1);
             }
         }

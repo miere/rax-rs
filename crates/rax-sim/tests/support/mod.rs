@@ -42,7 +42,7 @@ pub async fn simulator(node: NodeOptions) -> Simulator {
 
 pub fn node_config(sim: &Simulator) -> NodeConfig {
     NodeConfig {
-        endpoint: sim.url(),
+        endpoints: vec![sim.url()],
         token: TOKEN.to_owned(),
         keepalive: Duration::from_secs(1),
         backoff_min: Duration::from_millis(5),
