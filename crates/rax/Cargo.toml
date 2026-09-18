@@ -1,0 +1,16 @@
+[package]
+name = "rax"
+version = "0.1.0"
+edition = "2024"
+description = "RAX (Remote Agentic eXperience): the protocol a remote agent node speaks to a chat gateway"
+license = "MIT"
+publish = false
+repository = "https://github.com/miere/rax-rs"
+
+[dependencies]
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+thiserror = "2"
+time = { version = "0.3", features = ["serde-well-known"] }
+url = "2"

@@ -1,0 +1,36 @@
+[package]
+name = "rax-tokio"
+version = "0.1.0"
+edition = "2024"
+description = "A Tokio runtime for both ends of a RAX link"
+license = "MIT"
+publish = false
+repository = "https://github.com/miere/rax-rs"
+
+[lib]
+name = "rax_tokio"
+
+[dependencies]
+rax = { path = "../rax" }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+rand = "0.10"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = "1"
+serde_json = { version = "1", features = ["raw_value"] }
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+tokio-util = "0.7"
+tracing = "0.1"
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
