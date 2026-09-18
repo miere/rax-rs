@@ -16,6 +16,7 @@ pub mod interaction;
 pub mod link;
 pub mod message;
 pub mod open;
+pub mod resource;
 pub mod session;
 pub mod tool;
 pub mod transport;

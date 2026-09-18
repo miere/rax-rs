@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::io;
 
-use rax::NodeMessage;
 use rax::attachment::{ChunkPart, MAX_ATTACHMENT_BYTES, MAX_TRANSFER_CHUNK_BYTES, TransferChunk};
 use rax::id::TransferId;
+use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::connection::Core;
@@ -15,6 +15,8 @@ pub enum TransferError {
         "rax-tokio: an attachment of {size} bytes exceeds the {MAX_ATTACHMENT_BYTES}-byte ceiling"
     )]
     TooLarge { size: u64 },
+    #[error("rax-tokio: a resource of {size} bytes exceeds the reader's {max_bytes}-byte limit")]
+    OverReadLimit { size: u64, max_bytes: u64 },
     /// The receiver was told with a `failed` chunk, so it drops what it holds.
     #[error("rax-tokio: read attachment: {0}")]
     Read(#[source] io::Error),
@@ -24,25 +26,37 @@ pub enum TransferError {
     Send(#[from] SendError),
 }
 
-pub(crate) async fn send<R>(
-    core: &Core,
-    mut reader: R,
-    size: u64,
-) -> Result<TransferId, TransferError>
-where
-    R: AsyncRead + Unpin,
-{
+pub(crate) fn new_transfer_id() -> TransferId {
+    TransferId(format!("t{:016x}", rand::random::<u64>()))
+}
+
+pub(crate) fn check_size(size: u64) -> Result<(), TransferError> {
     if size > MAX_ATTACHMENT_BYTES {
         return Err(TransferError::TooLarge { size });
     }
-    let generation = core.generation();
-    let transfer_id = TransferId(format!("t{:016x}", rand::random::<u64>()));
-    let chunk = |seq, part| NodeMessage::Chunk {
-        body: TransferChunk {
+    Ok(())
+}
+
+pub(crate) async fn send<R, M, W>(
+    core: &Core,
+    generation: u64,
+    transfer_id: TransferId,
+    mut reader: R,
+    size: u64,
+    wrap: W,
+) -> Result<TransferId, TransferError>
+where
+    R: AsyncRead + Unpin,
+    M: Serialize,
+    W: Fn(TransferChunk) -> M,
+{
+    check_size(size)?;
+    let chunk = |seq, part| {
+        wrap(TransferChunk {
             transfer_id: transfer_id.clone(),
             seq,
             part,
-        },
+        })
     };
     let limit = MAX_TRANSFER_CHUNK_BYTES as u64;
     let (mut seq, mut read) = (0u32, 0u64);
@@ -73,7 +87,7 @@ where
             }
             core.send_in(generation, &chunk(seq, ChunkPart::End))
                 .await?;
-            return Ok(transfer_id);
+            return Ok(transfer_id.clone());
         }
     };
     core.send_in(

@@ -24,6 +24,12 @@ pub enum ErrorKind {
     UnknownSession,
     /// The session already has a turn open, and a node never queues a second one behind it.
     SessionBusy,
+    /// The gateway sent this resource but can no longer produce it.
+    NotFound,
+    /// Also the answer for a resource that exists but was never sent to the asking node, so a
+    /// node cannot probe for identifiers.
+    Forbidden,
+    TooLarge,
     Provider {
         provider: ProviderFailure,
     },

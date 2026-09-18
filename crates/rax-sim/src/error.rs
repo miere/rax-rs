@@ -32,6 +32,10 @@ pub enum SimError {
     },
     #[error("rax-sim: the node answered `{call}` with {reply}")]
     UnexpectedReply { call: &'static str, reply: String },
+    #[error("rax-sim: only `resource.read` can be served bytes, not {0:?}")]
+    NotARead(crate::node::NodeMethod),
+    #[error("rax-sim: serving a resource failed: {0}")]
+    Serve(String),
     #[error("rax-sim: {0}")]
     Io(#[from] io::Error),
     #[error("rax-sim: json: {0}")]

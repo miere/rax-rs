@@ -6,6 +6,7 @@ use rax::frame::{Frame, FrameError, ResumeOutcome};
 use rax::interaction::{DisplayAnswer, DisplayOutcome, SignInState};
 use rax::message::{from_payload, to_payload};
 use rax::open::{Subject, Tagged, UnhandledReason};
+use rax::resource::{ReadResource, ResourceTransfer};
 use rax::session::{
     GatewayCapabilities, Initialize, Initialized, NewSession, NodeCapabilities, Prompt,
     PromptAccepted, SessionDurability, ToolGate,
@@ -43,11 +44,13 @@ fn initialize_negotiates_version_and_capabilities() {
                     plan: false,
                     sign_in: true,
                     resource_schemes: vec!["chat".into()],
+                    readable_schemes: vec!["gateway".into()],
                 },
             }),
         ),
         json!({"k": "req", "id": "1", "method": "initialize", "body": {"protocol_version": 1,
-               "capabilities": {"question": true, "plan": false, "sign_in": true, "resource_schemes": ["chat"]}}}),
+               "capabilities": {"question": true, "plan": false, "sign_in": true, "resource_schemes": ["chat"],
+               "readable_schemes": ["gateway"]}}}),
     );
     assert_wire(
         &NodeMessage::Reply {
@@ -405,6 +408,57 @@ fn transfer_chunks_encode_bytes_as_base64() {
         },
         json!({"k": "chunk", "body": {"transfer_id": "x", "seq": 1, "part": "end"}}),
     );
+}
+
+#[test]
+fn a_resource_read_is_answered_before_its_bytes() {
+    assert_wire(
+        &NodeMessage::Request {
+            id: "n3".into(),
+            call: NodeCall::ReadResource(ReadResource {
+                uri: "gateway://files/F1".into(),
+                max_bytes: Some(1024),
+            })
+            .into(),
+        },
+        json!({"k": "req", "id": "n3", "method": "resource.read",
+               "body": {"uri": "gateway://files/F1", "max_bytes": 1024}}),
+    );
+    assert_wire(
+        &GatewayMessage::Reply {
+            id: "n3".into(),
+            reply: NodeReply::ReadResource(ResourceTransfer {
+                transfer_id: "x".into(),
+                size: 2,
+                mimetype: Some("text/plain".into()),
+            }),
+        },
+        json!({"k": "res", "id": "n3", "method": "resource.read",
+               "body": {"transfer_id": "x", "size": 2, "mimetype": "text/plain"}}),
+    );
+    assert_wire(
+        &GatewayMessage::Chunk {
+            body: TransferChunk {
+                transfer_id: "x".into(),
+                seq: 0,
+                part: ChunkPart::Data(b"hi".to_vec()),
+            },
+        },
+        json!({"k": "chunk", "body": {"transfer_id": "x", "seq": 0, "part": {"data": "aGk="}}}),
+    );
+    for (kind, name) in [
+        (ErrorKind::NotFound, "not_found"),
+        (ErrorKind::Forbidden, "forbidden"),
+        (ErrorKind::TooLarge, "too_large"),
+    ] {
+        assert_wire(
+            &GatewayMessage::Fault {
+                id: "n3".into(),
+                error: Error::new(kind, "no"),
+            },
+            json!({"k": "fault", "id": "n3", "error": {"message": "no", "kind": name}}),
+        );
+    }
 }
 
 #[test]
