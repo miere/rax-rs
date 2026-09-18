@@ -36,6 +36,9 @@ pub struct GatewayCapabilities {
     pub sign_in: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resource_schemes: Vec<String>,
+    /// Schemes whose links a node can fetch with `resource.read`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub readable_schemes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

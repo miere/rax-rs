@@ -24,6 +24,9 @@ pub enum CallError {
     LinkReset,
     #[error("rax-tokio: the link closed before the call was answered")]
     Closed,
+    /// The call was answered, but the bytes its reply announced did not arrive whole.
+    #[error("rax-tokio: the transfer failed: {0}")]
+    Transfer(String),
     #[error(transparent)]
     Unsendable(SendError),
 }

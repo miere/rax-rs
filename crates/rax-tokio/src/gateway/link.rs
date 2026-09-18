@@ -10,11 +10,13 @@ use rax::id::{RequestId, SessionId, TransferId};
 use rax::interaction::DisplayAnswer;
 use rax::message::from_payload;
 use rax::open::{Subject, UnhandledReason};
+use rax::resource::{ReadResource, ResourceTransfer};
 use rax::{
     Error, ErrorKind, Event, GatewayCall, GatewayMessage, GatewayReply, Link, NodeCall,
     NodeMessage, NodeReply, Open, ToolVerdict, Unhandled,
 };
 use serde_json::value::RawValue;
+use tokio::io::AsyncRead;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -22,7 +24,7 @@ use super::{Hub, NodeIdentity};
 use crate::calls::Calls;
 use crate::connection::{Core, Disconnect, Ended, Flow, Route, lock};
 use crate::error::{CallError, SendError};
-use crate::transfer::{Reassembly, Settled};
+use crate::transfer::{self, Reassembly, Settled, TransferError};
 
 #[derive(Debug)]
 pub enum LinkEvent {
@@ -231,6 +233,56 @@ impl GatewayLink {
 
     pub async fn fault(&self, id: RequestId, error: Error) -> Result<(), SendError> {
         self.send(&GatewayMessage::Fault { id, error }).await
+    }
+
+    /// Answers `resource.read`, refusing with `too_large` past the read's `max_bytes` or the
+    /// transfer ceiling. Whether this node may read the URI at all is the caller's to decide.
+    pub async fn serve_resource(
+        &self,
+        id: RequestId,
+        read: &ReadResource,
+        bytes: &[u8],
+        mimetype: Option<String>,
+    ) -> Result<TransferId, TransferError> {
+        self.serve_resource_from(id, read, bytes, bytes.len() as u64, mimetype)
+            .await
+    }
+
+    pub async fn serve_resource_from<R: AsyncRead + Unpin>(
+        &self,
+        id: RequestId,
+        read: &ReadResource,
+        reader: R,
+        size: u64,
+        mimetype: Option<String>,
+    ) -> Result<TransferId, TransferError> {
+        let refused = match read.max_bytes {
+            Some(max_bytes) if size > max_bytes => {
+                Err(TransferError::OverReadLimit { size, max_bytes })
+            }
+            _ => transfer::check_size(size),
+        };
+        if let Err(err) = refused {
+            let refusal = Error::new(ErrorKind::TooLarge, err.to_string());
+            self.fault(id, refusal).await?;
+            return Err(err);
+        }
+        let core = &self.shared.core;
+        let generation = core.generation();
+        let transfer_id = transfer::new_transfer_id();
+        let reply = GatewayMessage::Reply {
+            id,
+            reply: NodeReply::ReadResource(ResourceTransfer {
+                transfer_id: transfer_id.clone(),
+                size,
+                mimetype,
+            }),
+        };
+        core.send_in(generation, &reply).await?;
+        transfer::send(core, generation, transfer_id, reader, size, |body| {
+            GatewayMessage::Chunk { body }
+        })
+        .await
     }
 
     pub async fn unhandled(

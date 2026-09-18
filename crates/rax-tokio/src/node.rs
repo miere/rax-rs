@@ -1,11 +1,13 @@
 //! The dialling end: one supervisor task per node keeps a single `Link` alive across sockets.
 
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures_util::{SinkExt, Stream, StreamExt};
+use rax::attachment::MAX_ATTACHMENT_BYTES;
 use rax::event::BackgroundEvent;
 use rax::frame::ResumeOutcome;
 use rax::id::{RequestId, SessionId, TransferId};
@@ -13,6 +15,7 @@ use rax::interaction::DisplayAnswer;
 use rax::link::NO_EPOCH;
 use rax::message::from_payload;
 use rax::open::{Subject, UnhandledReason};
+use rax::resource::{ReadResource, ResourceTransfer};
 use rax::transport::{
     DEFAULT_WINDOW_BYTES, DEFAULT_WRITE_TIMEOUT, EndpointError, HANDSHAKE_TIMEOUT, Refusal,
     resolve_endpoint,
@@ -40,7 +43,7 @@ use crate::connection::{
     AttachError, Core, Disconnect, Ended, Flow, Queue, Route, Timing, drive, lock, socket_config,
 };
 use crate::error::{CallError, SendError};
-use crate::transfer::{self, TransferError};
+use crate::transfer::{self, Reassembly, Settled, TransferError};
 
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
@@ -111,6 +114,8 @@ impl NodeLink {
         let shared = Arc::new(Shared {
             core: Core::new(unlinked(&config)),
             calls: Calls::new("n"),
+            reading: Mutex::new(HashMap::new()),
+            transfers: Mutex::new(Reassembly::default()),
             shutdown: CancellationToken::new(),
             supervisor: Mutex::new(None),
             config,
@@ -139,12 +144,35 @@ impl Stream for NodeEvents {
     }
 }
 
+/// The bytes a gateway sent in answer to `resource.read`, checked against the size it declared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resource {
+    pub transfer_id: TransferId,
+    pub mimetype: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
+enum Answered {
+    Reply(NodeReply),
+    Resource(Resource),
+}
+
 struct Shared {
     core: Arc<Core>,
-    calls: Calls<NodeReply>,
+    calls: Calls<Answered>,
+    reading: Mutex<HashMap<TransferId, (RequestId, ResourceTransfer)>>,
+    transfers: Mutex<Reassembly>,
     shutdown: CancellationToken,
     supervisor: Mutex<Option<JoinHandle<()>>>,
     config: NodeConfig,
+}
+
+impl Shared {
+    fn fail_all(&self, ended: Ended) {
+        lock(&self.reading).clear();
+        *lock(&self.transfers) = Reassembly::default();
+        self.calls.fail_all(ended);
+    }
 }
 
 /// Sends wait for window room instead of failing, and are cancelled by dropping the future.
@@ -194,6 +222,31 @@ impl NodeHandle {
     }
 
     pub async fn call(&self, call: impl Into<Open<NodeCall>>) -> Result<NodeReply, CallError> {
+        Ok(match self.answered(call.into()).await? {
+            Answered::Reply(reply) => reply,
+            Answered::Resource(Resource {
+                transfer_id,
+                mimetype,
+                bytes,
+            }) => NodeReply::ReadResource(ResourceTransfer {
+                transfer_id,
+                size: bytes.len() as u64,
+                mimetype,
+            }),
+        })
+    }
+
+    /// Returns once every byte has arrived, or fails if the transfer does.
+    pub async fn read_resource(&self, read: ReadResource) -> Result<Resource, CallError> {
+        match self.answered(NodeCall::ReadResource(read).into()).await? {
+            Answered::Resource(resource) => Ok(resource),
+            Answered::Reply(reply) => Err(CallError::Transfer(format!(
+                "the gateway answered `resource.read` with {reply:?}"
+            ))),
+        }
+    }
+
+    async fn answered(&self, call: Open<NodeCall>) -> Result<Answered, CallError> {
         let shared = &self.shared;
         let generation = shared.core.generation();
         let (id, reply) = shared.calls.register();
@@ -203,7 +256,7 @@ impl NodeHandle {
         };
         let request = NodeMessage::Request {
             id: id.clone(),
-            call: call.into(),
+            call,
         };
         shared.core.send_in(generation, &request).await?;
         let result = reply.await.unwrap_or(Err(CallError::Closed));
@@ -213,7 +266,7 @@ impl NodeHandle {
 
     /// The caller announces the transfer with an `attachment` event once this returns.
     pub async fn send_attachment(&self, bytes: &[u8]) -> Result<TransferId, TransferError> {
-        transfer::send(&self.shared.core, bytes, bytes.len() as u64).await
+        self.send_attachment_from(bytes, bytes.len() as u64).await
     }
 
     pub async fn send_attachment_from<R: AsyncRead + Unpin>(
@@ -221,13 +274,19 @@ impl NodeHandle {
         reader: R,
         size: u64,
     ) -> Result<TransferId, TransferError> {
-        transfer::send(&self.shared.core, reader, size).await
+        let core = &self.shared.core;
+        let generation = core.generation();
+        let transfer_id = transfer::new_transfer_id();
+        transfer::send(core, generation, transfer_id, reader, size, |body| {
+            NodeMessage::Chunk { body }
+        })
+        .await
     }
 
     pub async fn close(&self) {
         let shared = &self.shared;
         shared.core.end(Ended::Closed);
-        shared.calls.fail_all(Ended::Closed);
+        shared.fail_all(Ended::Closed);
         shared.shutdown.cancel();
         let supervisor = lock(&shared.supervisor).take();
         if let Some(supervisor) = supervisor {
@@ -241,7 +300,7 @@ impl NodeHandle {
 }
 
 struct Forget<'a> {
-    calls: &'a Calls<NodeReply>,
+    calls: &'a Calls<Answered>,
     id: &'a RequestId,
 }
 
@@ -308,7 +367,7 @@ async fn supervise(shared: Arc<Shared>, endpoint: Url, events: mpsc::Sender<Node
                 };
                 tracing::error!(status, "rax gateway refused this node; not redialling");
                 shared.core.end(Ended::Closed);
-                shared.calls.fail_all(Ended::Closed);
+                shared.fail_all(Ended::Closed);
                 emit(&shared, &events, event).await;
                 break;
             }
@@ -324,7 +383,7 @@ async fn supervise(shared: Arc<Shared>, endpoint: Url, events: mpsc::Sender<Node
         }
     }
     shared.core.end(Ended::Closed);
-    shared.calls.fail_all(Ended::Closed);
+    shared.fail_all(Ended::Closed);
 }
 
 async fn emit(shared: &Shared, events: &mpsc::Sender<NodeEvent>, event: NodeEvent) -> bool {
@@ -420,7 +479,7 @@ async fn dial(shared: &Shared, endpoint: &Url) -> Result<(Socket, Queue, NodeEve
             tracing::info!(%reason, epoch, "rax gateway started a fresh link");
             match core.refresh(claim, link_with_epoch(&shared.config, epoch)) {
                 Ok(queue) => {
-                    shared.calls.fail_all(Ended::Reset);
+                    shared.fail_all(Ended::Reset);
                     Ok((socket, queue, NodeEvent::Fresh))
                 }
                 Err(_) => Err(DialError::Closed),
@@ -466,6 +525,52 @@ impl Router {
                 tracing::debug!(error = %err, "rax automatic answer not sent");
             }
         });
+    }
+
+    fn expect_transfer(&self, id: RequestId, transfer: ResourceTransfer) {
+        if transfer.size > MAX_ATTACHMENT_BYTES {
+            let reason = format!(
+                "the gateway declared {} bytes, over the {MAX_ATTACHMENT_BYTES}-byte ceiling",
+                transfer.size
+            );
+            self.shared
+                .calls
+                .settle(&id, Err(CallError::Transfer(reason)));
+            return;
+        }
+        lock(&self.shared.reading).insert(transfer.transfer_id.clone(), (id, transfer));
+    }
+
+    fn settle_transfer(&self, settled: Settled) {
+        let (transfer_id, result) = match settled {
+            Settled::Complete { transfer_id, bytes } => (transfer_id, Ok(bytes)),
+            Settled::Failed {
+                transfer_id,
+                reason,
+            } => (transfer_id, Err(reason)),
+        };
+        let Some((id, transfer)) = lock(&self.shared.reading).remove(&transfer_id) else {
+            tracing::debug!(%transfer_id, "rax transfer nobody is reading");
+            return;
+        };
+        let result = result.and_then(|bytes| {
+            if bytes.len() as u64 == transfer.size {
+                Ok(Answered::Resource(Resource {
+                    transfer_id,
+                    mimetype: transfer.mimetype,
+                    bytes,
+                }))
+            } else {
+                Err(format!(
+                    "the gateway declared {} bytes and sent {}",
+                    transfer.size,
+                    bytes.len()
+                ))
+            }
+        });
+        self.shared
+            .calls
+            .settle(&id, result.map_err(CallError::Transfer));
     }
 
     fn malformed(&self, payload: &RawValue, err: impl std::fmt::Display) {
@@ -524,8 +629,15 @@ impl Route for Router {
                 });
                 Flow::Continue
             }
+            GatewayMessage::Reply {
+                id,
+                reply: NodeReply::ReadResource(transfer),
+            } => {
+                self.expect_transfer(id, transfer);
+                Flow::Continue
+            }
             GatewayMessage::Reply { id, reply } => {
-                if !calls.settle(&id, Ok(reply)) {
+                if !calls.settle(&id, Ok(Answered::Reply(reply))) {
                     tracing::debug!(%id, "rax reply for a call nobody is waiting on");
                 }
                 Flow::Continue
@@ -533,6 +645,13 @@ impl Route for Router {
             GatewayMessage::Fault { id, error } => {
                 if !calls.settle(&id, Err(CallError::Fault(error))) {
                     tracing::debug!(%id, "rax fault for a call nobody is waiting on");
+                }
+                Flow::Continue
+            }
+            GatewayMessage::Chunk { body } => {
+                let settled = lock(&self.shared.transfers).accept(body);
+                if let Some(settled) = settled {
+                    self.settle_transfer(settled);
                 }
                 Flow::Continue
             }

@@ -11,6 +11,7 @@ use crate::event::{BackgroundEvent, Event};
 use crate::id::{RequestId, SessionId};
 use crate::interaction::{DisplayAnswer, SignInRequest, SignInSettled};
 use crate::open::{Open, Unhandled, tagged};
+use crate::resource::{ReadResource, ResourceTransfer};
 use crate::session::{
     Initialize, Initialized, NewSession, Prompt, PromptAccepted, SessionCreated, SessionRef,
 };
@@ -40,6 +41,9 @@ pub enum GatewayMessage {
     /// Answers a question, plan or sign-in, keyed by the id the node gave it.
     #[serde(rename = "answer")]
     Answer { body: DisplayAnswer },
+    /// Only in answer to `resource.read`, after its reply.
+    #[serde(rename = "chunk")]
+    Chunk { body: TransferChunk },
     /// `stream` is absent when what went unhandled belonged to no turn.
     #[serde(rename = "unhandled")]
     Unhandled {
@@ -52,7 +56,15 @@ pub enum GatewayMessage {
 tagged!(
     GatewayMessage,
     "k",
-    ["req", "res", "fault", "verdict", "answer", "unhandled"]
+    [
+        "req",
+        "res",
+        "fault",
+        "verdict",
+        "answer",
+        "chunk",
+        "unhandled"
+    ]
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,12 +192,19 @@ pub enum NodeCall {
     /// Answered so reports go one at a time, and a recovery never overtakes the failure it ends.
     #[serde(rename = "credential.health")]
     CredentialHealth(CredentialHealth),
+    #[serde(rename = "resource.read")]
+    ReadResource(ReadResource),
 }
 
 tagged!(
     NodeCall,
     "method",
-    ["sign_in", "sign_in.settled", "credential.health"]
+    [
+        "sign_in",
+        "sign_in.settled",
+        "credential.health",
+        "resource.read"
+    ]
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,6 +216,8 @@ pub enum NodeReply {
     SignInSettled,
     #[serde(rename = "credential.health")]
     CredentialHealth,
+    #[serde(rename = "resource.read")]
+    ReadResource(ResourceTransfer),
 }
 
 #[derive(Debug, thiserror::Error)]

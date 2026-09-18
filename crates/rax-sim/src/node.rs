@@ -2,6 +2,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use rax::ErrorKind;
 use rax::credential::CredentialRenewal;
 use rax::event::BackgroundEvent;
 use rax::id::{RequestId, SessionId, ToolCallId, TransferId};
@@ -13,8 +14,8 @@ use rax::{
     ContentBlock, Decision, Event, GatewayCall, GatewayMessage, GatewayReply, NodeCall, NodeReply,
     Open, PROTOCOL_VERSION, ToolCall, ToolVerdict, Unhandled,
 };
-use rax_tokio::Disconnect;
 use rax_tokio::gateway::{GatewayLink, LinkEvent, LinkEvents, NodeIdentity, PendingReply};
+use rax_tokio::{Disconnect, SendError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -30,6 +31,7 @@ pub enum NodeMethod {
     SignIn,
     SignInSettled,
     CredentialHealth,
+    ReadResource,
 }
 
 impl NodeMethod {
@@ -38,15 +40,21 @@ impl NodeMethod {
             NodeCall::SignIn(_) => Self::SignIn,
             NodeCall::SignInSettled(_) => Self::SignInSettled,
             NodeCall::CredentialHealth(_) => Self::CredentialHealth,
+            NodeCall::ReadResource(_) => Self::ReadResource,
         }
     }
 
-    fn reply(self) -> NodeReply {
-        match self {
+    async fn answer(self, link: &GatewayLink, id: RequestId) -> Result<(), SendError> {
+        let reply = match self {
             Self::SignIn => NodeReply::SignIn,
             Self::SignInSettled => NodeReply::SignInSettled,
             Self::CredentialHealth => NodeReply::CredentialHealth,
-        }
+            Self::ReadResource => {
+                let gone = rax::Error::new(ErrorKind::NotFound, "the simulator serves no bytes");
+                return link.fault(id, gone).await;
+            }
+        };
+        link.reply(id, reply).await
     }
 }
 
@@ -145,11 +153,23 @@ impl NodeCallRequest {
 
     pub async fn reply(self) -> Result<(), SimError> {
         self.mark_answered();
-        let reply = self.method().reply();
-        self.link
-            .reply(self.id, reply)
+        self.method()
+            .answer(&self.link, self.id)
             .await
             .map_err(SimError::send("a node call reply"))
+    }
+
+    /// Answers `resource.read` with these bytes, refusing with `too_large` past its `max_bytes`.
+    pub async fn serve(self, bytes: &[u8], mimetype: Option<String>) -> Result<(), SimError> {
+        self.mark_answered();
+        let NodeCall::ReadResource(read) = &self.call else {
+            return Err(SimError::NotARead(self.method()));
+        };
+        self.link
+            .serve_resource(self.id.clone(), read, bytes, mimetype)
+            .await
+            .map(drop)
+            .map_err(|err| SimError::Serve(err.to_string()))
     }
 
     pub async fn fault(self, error: rax::Error) -> Result<(), SimError> {
@@ -251,7 +271,7 @@ impl NodeShared {
         let index = lock(&self.log).arrived(id.clone(), method, arrived);
         if lock(&self.options).auto_reply.contains(&method) {
             lock(&self.log).answered(index, truncate(self.started.elapsed()));
-            if let Err(err) = self.link.reply(id, method.reply()).await {
+            if let Err(err) = method.answer(&self.link, id).await {
                 tracing::debug!(error = %err, "rax-sim automatic reply not sent");
             }
             return;

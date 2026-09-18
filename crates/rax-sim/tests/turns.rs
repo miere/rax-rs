@@ -10,10 +10,12 @@ use std::task::{Context, Poll};
 use rax::attachment::Attachment;
 use rax::credential::CredentialHealth;
 use rax::event::StopReason;
+use rax::resource::ReadResource;
 use rax::session::{GatewayCapabilities, SessionDurability, ToolGate};
 use rax::tool::{DeniedBy, ToolCallStatus};
 use rax::{Decision, Event, NodeCall, NodeReply, PROTOCOL_VERSION};
 use rax_sim::{Entry, Match, NodeMethod, NodeOptions, Overlap, Transfer, VerdictPolicy};
+use rax_tokio::CallError;
 use rax_tokio::node::{NodeEvent, NodeLink};
 use support::*;
 use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
@@ -260,5 +262,49 @@ async fn node_calls_sent_before_the_last_was_answered_are_flagged() {
         log.iter().all(|record| record.answered.is_some()),
         "{log:?}"
     );
+    node.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resource_read_is_served_or_refused_as_gone() {
+    let sim = simulator(NodeOptions::default()).await;
+    let (node, mut events) = NodeLink::start(node_config(&sim)).unwrap();
+    assert!(matches!(
+        within(events.recv()).await,
+        Some(NodeEvent::Fresh)
+    ));
+    let sim_node = sim.next_node().await.unwrap();
+    let read = || ReadResource {
+        uri: "gateway://files/F1".into(),
+        max_bytes: None,
+    };
+
+    let reading = tokio::spawn({
+        let node = node.clone();
+        async move { node.read_resource(read()).await }
+    });
+    let call = sim_node.next_node_call().await.unwrap();
+    assert_eq!(call.method(), NodeMethod::ReadResource);
+    call.serve(b"quarterly figures", Some("text/csv".into()))
+        .await
+        .unwrap();
+    let resource = within(reading).await.unwrap().unwrap();
+    assert_eq!(resource.bytes, b"quarterly figures");
+
+    let reading = tokio::spawn({
+        let node = node.clone();
+        async move { node.read_resource(read()).await }
+    });
+    sim_node
+        .next_node_call()
+        .await
+        .unwrap()
+        .reply()
+        .await
+        .unwrap();
+    let Err(CallError::Fault(fault)) = within(reading).await.unwrap() else {
+        panic!("expected a fault")
+    };
+    assert_eq!(fault.kind, rax::ErrorKind::NotFound);
     node.close().await;
 }
