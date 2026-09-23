@@ -29,4 +29,4 @@ pub use link::{Delivery, Link, LinkConfig, LinkError, Received};
 pub use message::{GatewayCall, GatewayMessage, GatewayReply, NodeCall, NodeMessage, NodeReply};
 pub use open::{Open, Unhandled};
 pub use session::PROTOCOL_VERSION;
-pub use tool::{Decision, ToolCall, ToolVerdict};
+pub use tool::{CallTool, Decision, ToolCall, ToolCatalogue, ToolDef, ToolOutcome, ToolVerdict};

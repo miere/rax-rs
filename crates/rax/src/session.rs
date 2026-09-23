@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::content::ContentBlock;
 use crate::id::SessionId;
 use crate::open::{Open, Unhandled};
+use crate::tool::ToolCatalogue;
 
 /// Negotiated at `initialize`, unlike the frame version: nodes and gateways upgrade on their own
 /// schedules, so an older peer must still be served.
@@ -39,6 +40,10 @@ pub struct GatewayCapabilities {
     /// Schemes whose links a node can fetch with `resource.read`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub readable_schemes: Vec<String>,
+    /// Unlike the flags above this carries the capability itself, because a node cannot publish a
+    /// tool it only knows the existence of. Absent means this gateway offers none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<ToolCatalogue>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -15,7 +15,7 @@ use crate::resource::{ReadResource, ResourceTransfer};
 use crate::session::{
     Initialize, Initialized, NewSession, Prompt, PromptAccepted, SessionCreated, SessionRef,
 };
-use crate::tool::ToolVerdict;
+use crate::tool::{CallTool, ToolOutcome, ToolVerdict};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "k")]
@@ -194,6 +194,9 @@ pub enum NodeCall {
     CredentialHealth(CredentialHealth),
     #[serde(rename = "resource.read")]
     ReadResource(ReadResource),
+    /// Runs a tool the gateway published in its catalogue at `initialize`.
+    #[serde(rename = "tool.call")]
+    CallTool(CallTool),
 }
 
 tagged!(
@@ -203,7 +206,8 @@ tagged!(
         "sign_in",
         "sign_in.settled",
         "credential.health",
-        "resource.read"
+        "resource.read",
+        "tool.call"
     ]
 );
 
@@ -218,6 +222,8 @@ pub enum NodeReply {
     CredentialHealth,
     #[serde(rename = "resource.read")]
     ReadResource(ResourceTransfer),
+    #[serde(rename = "tool.call")]
+    CallTool(ToolOutcome),
 }
 
 #[derive(Debug, thiserror::Error)]

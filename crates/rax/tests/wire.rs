@@ -45,6 +45,7 @@ fn initialize_negotiates_version_and_capabilities() {
                     sign_in: true,
                     resource_schemes: vec!["chat".into()],
                     readable_schemes: vec!["gateway".into()],
+                    tools: None,
                 },
             }),
         ),
@@ -625,4 +626,100 @@ fn frames_refuse_what_the_delivery_layer_forbids() {
             ..
         }
     ));
+}
+
+#[test]
+fn a_gateway_publishes_its_tools_at_initialize() {
+    assert_wire(
+        &request(
+            "1",
+            GatewayCall::Initialize(Initialize {
+                protocol_version: 1,
+                capabilities: GatewayCapabilities {
+                    tools: Some(ToolCatalogue {
+                        namespace: "murtaugh".into(),
+                        tools: vec![ToolDef {
+                            name: "slack_read_message".into(),
+                            description: "Read a message from a Slack link.".into(),
+                            input_schema: Some(json!({"type": "object"})),
+                            kind: ToolKind::Read,
+                        }],
+                    }),
+                    ..Default::default()
+                },
+            }),
+        ),
+        json!({"k": "req", "id": "1", "method": "initialize", "body": {"protocol_version": 1,
+               "capabilities": {"question": false, "plan": false, "sign_in": false,
+               "tools": {"namespace": "murtaugh", "tools": [{"name": "slack_read_message",
+               "description": "Read a message from a Slack link.",
+               "input_schema": {"type": "object"}, "kind": "read"}]}}}}),
+    );
+}
+
+/// A gateway that predates the catalogue sends no `tools` key, and must not decode as one offering
+/// an unnamed namespace.
+#[test]
+fn a_gateway_with_no_catalogue_offers_no_tools() {
+    let raw = json!({"question": true, "plan": false, "sign_in": false});
+    let capabilities: GatewayCapabilities = serde_json::from_value(raw).unwrap();
+    assert_eq!(capabilities.tools, None);
+}
+
+/// The distinction the whole design rests on: a tool that ran and said no is an answer, so the
+/// agent reads it; a call that never ran is a fault, so the node can say so in its own words.
+#[test]
+fn a_tool_that_ran_and_failed_is_still_a_reply() {
+    assert_wire(
+        &NodeMessage::Request {
+            id: "n4".into(),
+            call: NodeCall::CallTool(CallTool {
+                session_id: "s1".into(),
+                name: "slack_read_message".into(),
+                arguments: Some(json!({"link": "https://slack.com/archives/C1/p1"})),
+            })
+            .into(),
+        },
+        json!({"k": "req", "id": "n4", "method": "tool.call",
+               "body": {"session_id": "s1", "name": "slack_read_message",
+               "arguments": {"link": "https://slack.com/archives/C1/p1"}}}),
+    );
+    assert_wire(
+        &GatewayMessage::Reply {
+            id: "n4".into(),
+            reply: NodeReply::CallTool(ToolOutcome {
+                content: "I am not in that channel, so I cannot read it.".into(),
+                is_error: true,
+            }),
+        },
+        json!({"k": "res", "id": "n4", "method": "tool.call",
+               "body": {"content": "I am not in that channel, so I cannot read it.",
+               "is_error": true}}),
+    );
+}
+
+/// `forbidden` is the same answer a resource gets, and for the same reason: a node must not be able
+/// to discover a tool by guessing at names the gateway never published.
+#[test]
+fn a_tool_the_gateway_never_published_is_forbidden() {
+    assert_wire(
+        &GatewayMessage::Fault {
+            id: "n4".into(),
+            error: Error::new(ErrorKind::Forbidden, "no such tool"),
+        },
+        json!({"k": "fault", "id": "n4", "error": {"message": "no such tool", "kind": "forbidden"}}),
+    );
+}
+
+#[test]
+fn a_tool_taking_no_arguments_omits_both_optional_fields() {
+    assert_wire(
+        &ToolDef {
+            name: "speak".into(),
+            description: "Say something out loud.".into(),
+            input_schema: None,
+            kind: ToolKind::Other,
+        },
+        json!({"name": "speak", "description": "Say something out loud.", "kind": "other"}),
+    );
 }

@@ -32,6 +32,7 @@ pub enum NodeMethod {
     SignInSettled,
     CredentialHealth,
     ReadResource,
+    CallTool,
 }
 
 impl NodeMethod {
@@ -41,6 +42,7 @@ impl NodeMethod {
             NodeCall::SignInSettled(_) => Self::SignInSettled,
             NodeCall::CredentialHealth(_) => Self::CredentialHealth,
             NodeCall::ReadResource(_) => Self::ReadResource,
+            NodeCall::CallTool(_) => Self::CallTool,
         }
     }
 
@@ -52,6 +54,12 @@ impl NodeMethod {
             Self::ReadResource => {
                 let gone = rax::Error::new(ErrorKind::NotFound, "the simulator serves no bytes");
                 return link.fault(id, gone).await;
+            }
+            // The simulator publishes no catalogue, so every name is one it never offered.
+            Self::CallTool => {
+                let unoffered =
+                    rax::Error::new(ErrorKind::Forbidden, "the simulator publishes no tools");
+                return link.fault(id, unoffered).await;
             }
         };
         link.reply(id, reply).await

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::content::ContentBlock;
-use crate::id::ToolCallId;
+use crate::id::{SessionId, ToolCallId};
 use crate::open::Open;
 
 /// Announced before the tool runs, and the node must not run it until a [`ToolVerdict`] arrives:
@@ -38,6 +38,52 @@ pub enum ToolKind {
     #[default]
     #[serde(other)]
     Other,
+}
+
+/// The tools a gateway runs on a node's behalf, declared once at `initialize`. A node publishes
+/// them to its agent and invokes them with `tool.call`; it never learns what any of them do, which
+/// is what lets a gateway add one without the node shipping a release.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCatalogue {
+    /// Qualifies every name on the node, so a gateway decides what its own tools are called rather
+    /// than answering to a constant compiled into the node.
+    pub namespace: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolDef>,
+}
+
+/// `kind` is the gateway's, not the node's: only the gateway knows whether its tool reads or
+/// destroys, and a node that guessed from the name would mislabel every card it draws.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolDef {
+    pub name: String,
+    pub description: String,
+    /// A JSON Schema object. Absent means the tool takes no arguments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<Value>,
+    #[serde(default)]
+    pub kind: ToolKind,
+}
+
+/// Runs one catalogued tool. A gateway serves only names it published to the asking node, so a
+/// node cannot reach a tool by guessing; anything else is `forbidden`, as for resources.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallTool {
+    /// Binds the call to a conversation, because a gateway's tools act inside one — which thread
+    /// to post to is the gateway's to resolve, and never travels to the node.
+    pub session_id: SessionId,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Value>,
+}
+
+/// A tool that ran and failed is an answer the agent reads and may act on, so it is a reply with
+/// `is_error`, not a fault. A fault means the call never ran at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolOutcome {
+    pub content: String,
+    #[serde(default)]
+    pub is_error: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
