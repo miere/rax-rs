@@ -13,7 +13,7 @@ use rax::open::{Subject, UnhandledReason};
 use rax::resource::{ReadResource, ResourceTransfer};
 use rax::{
     Error, ErrorKind, Event, GatewayCall, GatewayMessage, GatewayReply, Link, NodeCall,
-    NodeMessage, NodeReply, Open, ToolVerdict, Unhandled,
+    NodeMessage, NodeReply, Open, Rejection, ToolVerdict, Unhandled,
 };
 use serde_json::value::RawValue;
 use tokio::io::AsyncRead;
@@ -301,6 +301,17 @@ impl GatewayLink {
     /// Tells a stream that ended with the link apart from one the node closed with `end`.
     pub fn is_closed(&self) -> bool {
         self.shared.core.is_ended()
+    }
+
+    /// Ends the link over metadata this gateway cannot accept. The node hears why and stops
+    /// redialling, so the node's owner fixes it and nobody on this side is paged. A node that is
+    /// not connected at that moment finds the link gone on its next dial, starts fresh, and is
+    /// rejected again at `initialize`.
+    pub async fn reject(&self, body: Rejection) {
+        if let Err(err) = self.send(&GatewayMessage::Rejected { body }).await {
+            tracing::debug!(error = %err, "rax rejection not sent");
+        }
+        self.close().await;
     }
 
     pub async fn close(&self) {

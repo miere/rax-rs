@@ -62,6 +62,7 @@ fn initialize_negotiates_version_and_capabilities() {
                     interruptible: Some(true),
                     ..Default::default()
                 },
+                metadata: Default::default(),
             }),
         },
         json!({"k": "res", "id": "1", "method": "initialize", "body": {"protocol_version": 1,
@@ -536,6 +537,8 @@ fn tag_name_lists_match_the_enums() {
         ),
         GatewayCall::NAMES
     );
+    assert_eq!(NodeCall::NAMES.last(), Some(&"metadata.update"));
+    assert!(GatewayMessage::NAMES.contains(&"rejected"));
     let event_names = Event::NAMES;
     for name in BackgroundEvent::NAMES {
         assert!(
@@ -722,4 +725,108 @@ fn a_tool_taking_no_arguments_omits_both_optional_fields() {
         },
         json!({"name": "speak", "description": "Say something out loud.", "kind": "other"}),
     );
+}
+
+#[test]
+fn a_node_declares_metadata_at_initialize_for_the_gateways_that_own_it() {
+    let metadata = Metadata::from([(
+        "murtaugh_access".to_owned(),
+        json!({"policy": "allow_list", "people": ["U0ABC"]}),
+    )]);
+    assert_wire(
+        &NodeMessage::Reply {
+            id: "1".into(),
+            reply: GatewayReply::Initialize(Initialized {
+                protocol_version: 1,
+                capabilities: NodeCapabilities::default(),
+                metadata,
+            }),
+        },
+        json!({"k": "res", "id": "1", "method": "initialize", "body": {"protocol_version": 1,
+               "capabilities": {"prompt": {"image": false, "audio": false, "embedded_resource": false},
+               "tool_gate": "permission_prompts", "sessions": "ephemeral"},
+               "metadata": {"murtaugh_access": {"policy": "allow_list", "people": ["U0ABC"]}}}}),
+    );
+    let older: Initialized =
+        serde_json::from_value(json!({"protocol_version": 1, "capabilities": {}})).unwrap();
+    assert!(older.metadata.is_empty());
+}
+
+#[test]
+fn a_metadata_update_replaces_the_whole_map() {
+    assert_wire(
+        &NodeMessage::Request {
+            id: "n2".into(),
+            call: NodeCall::UpdateMetadata(UpdateMetadata {
+                metadata: Metadata::from([("murtaugh_access".to_owned(), json!("always_allow"))]),
+            })
+            .into(),
+        },
+        json!({"k": "req", "id": "n2", "method": "metadata.update",
+               "body": {"metadata": {"murtaugh_access": "always_allow"}}}),
+    );
+    assert_wire(
+        &GatewayMessage::Reply {
+            id: "n2".into(),
+            reply: NodeReply::UpdateMetadata,
+        },
+        json!({"k": "res", "id": "n2", "method": "metadata.update"}),
+    );
+}
+
+#[test]
+fn a_gateway_reports_the_metadata_keys_it_ignored() {
+    assert_wire(
+        &GatewayMessage::Unhandled {
+            stream: None,
+            body: Unhandled {
+                subject: Subject::MetadataKey {
+                    key: "murtaugh_colour".into(),
+                },
+                reason: UnhandledReason::UnsupportedType,
+                message: None,
+            },
+        },
+        json!({"k": "unhandled", "body": {"subject": "metadata_key", "key": "murtaugh_colour",
+               "reason": "unsupported_type"}}),
+    );
+}
+
+#[test]
+fn a_gateway_rejects_metadata_it_owns_and_cannot_accept() {
+    assert_wire(
+        &GatewayMessage::Fault {
+            id: "n2".into(),
+            error: Error::new(ErrorKind::Rejected, "`people` must be a list"),
+        },
+        json!({"k": "fault", "id": "n2", "error": {"message": "`people` must be a list",
+               "kind": "rejected"}}),
+    );
+    assert_wire(
+        &GatewayMessage::Rejected {
+            body: Rejection {
+                key: Some("murtaugh_access".into()),
+                message: "`people` must be a list".into(),
+            },
+        },
+        json!({"k": "rejected", "body": {"key": "murtaugh_access",
+               "message": "`people` must be a list"}}),
+    );
+}
+
+#[test]
+fn a_metadata_key_names_its_gateway_before_the_first_underscore() {
+    use rax::metadata::{owned_by, owner};
+    assert_eq!(owner("murtaugh_access"), Some(("murtaugh", "access")));
+    assert_eq!(owner("murtaugh_tool_mode"), Some(("murtaugh", "tool_mode")));
+    assert_eq!(owner("access"), None);
+    assert_eq!(owner("_access"), None);
+    assert_eq!(owner("murtaugh_"), None);
+    let metadata = Metadata::from([
+        ("murtaugh_access".to_owned(), json!("always_allow")),
+        ("other_access".to_owned(), json!(1)),
+        ("loose".to_owned(), json!(2)),
+    ]);
+    let owned: Vec<_> = owned_by(&metadata, "murtaugh").collect();
+    assert_eq!(owned, [("access", &json!("always_allow"))]);
 }

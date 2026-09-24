@@ -177,6 +177,7 @@ async fn serve(
                     tool_gate: ToolGate::EveryCall,
                     ..Default::default()
                 },
+                metadata: Default::default(),
             }),
             GatewayCall::NewSession(_) => {
                 sessions += 1;

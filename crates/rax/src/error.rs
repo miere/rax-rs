@@ -30,6 +30,8 @@ pub enum ErrorKind {
     /// node cannot probe for identifiers.
     Forbidden,
     TooLarge,
+    /// Metadata the gateway owns but cannot accept; the link ends right after this fault.
+    Rejected,
     Provider {
         provider: ProviderFailure,
     },

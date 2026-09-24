@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use rax::credential::CredentialHealth;
 use rax::event::BackgroundEvent;
-use rax::{Decision, NodeCall, Open, ToolVerdict};
+use rax::{Decision, Error, ErrorKind, NodeCall, Open, Rejection, ToolVerdict, UpdateMetadata};
 use rax_tokio::CallError;
 use rax_tokio::gateway::LinkEvent;
 use rax_tokio::node::{NodeEvent, NodeLink};
@@ -336,4 +336,56 @@ async fn a_tls_dial_fails_and_redials_rather_than_crashing() {
         drop(socket);
     }
     node.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rejected_metadata_ends_the_link_and_stops_dialling() {
+    let (server, mut new_links) = gateway(gateway_config()).await;
+    let proxy = Proxy::start(server.local_addr()).await;
+    let Pair {
+        node,
+        mut node_events,
+        link,
+        mut link_events,
+    } = connect(&mut new_links, node_config(proxy.addr())).await;
+
+    let update = tokio::spawn({
+        let node = node.clone();
+        async move {
+            node.call(NodeCall::UpdateMetadata(UpdateMetadata::default()))
+                .await
+        }
+    });
+    let LinkEvent::Request { id, .. } = next_link(&mut link_events).await else {
+        panic!("expected metadata.update")
+    };
+    let reason = "`murtaugh_access` must be an object";
+    link.fault(id, Error::new(ErrorKind::Rejected, reason))
+        .await
+        .unwrap();
+    link.reject(Rejection {
+        key: Some("murtaugh_access".into()),
+        message: reason.into(),
+    })
+    .await;
+
+    let Err(CallError::Fault(fault)) = within(update).await.unwrap() else {
+        panic!("expected the update to be faulted")
+    };
+    assert_eq!(fault.kind, ErrorKind::Rejected);
+    let NodeEvent::Rejected(rejection) = next(&mut node_events).await else {
+        panic!("expected a rejection")
+    };
+    assert_eq!(rejection.key.as_deref(), Some("murtaugh_access"));
+    assert!(within(node_events.recv()).await.is_none());
+    assert!(matches!(
+        node.call(NodeCall::UpdateMetadata(UpdateMetadata::default()))
+            .await,
+        Err(CallError::Closed)
+    ));
+    assert!(matches!(
+        next_link(&mut link_events).await,
+        LinkEvent::Closed
+    ));
+    assert_eq!(proxy.accepts(), 1);
 }

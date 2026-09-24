@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::content::ContentBlock;
 use crate::id::SessionId;
+use crate::metadata::Metadata;
 use crate::open::{Open, Unhandled};
 use crate::tool::ToolCatalogue;
 
@@ -23,6 +24,9 @@ pub struct Initialized {
     pub protocol_version: u16,
     #[serde(default)]
     pub capabilities: NodeCapabilities,
+    /// Not a capability: RAX never reads it, and only the gateway owning a key acts on it.
+    #[serde(default, skip_serializing_if = "Metadata::is_empty")]
+    pub metadata: Metadata,
 }
 
 /// Hints that save a round trip, never guarantees: a peer must still answer anything it receives

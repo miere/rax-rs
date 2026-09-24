@@ -47,6 +47,7 @@ async fn the_first_connection_is_fresh_and_initialize_round_trips() {
         GatewayReply::Initialize(Initialized {
             protocol_version: offer.protocol_version,
             capabilities: Default::default(),
+            metadata: Default::default(),
         }),
     )
     .await

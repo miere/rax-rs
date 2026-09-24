@@ -86,6 +86,10 @@ pub enum Subject {
     MessageKind {
         name: String,
     },
+    /// A metadata key the gateway ignored, whoever owns it.
+    MetadataKey {
+        key: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
