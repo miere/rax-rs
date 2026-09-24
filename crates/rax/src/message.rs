@@ -10,6 +10,7 @@ use crate::error::Error;
 use crate::event::{BackgroundEvent, Event};
 use crate::id::{RequestId, SessionId};
 use crate::interaction::{DisplayAnswer, SignInRequest, SignInSettled};
+use crate::metadata::{Rejection, UpdateMetadata};
 use crate::open::{Open, Unhandled, tagged};
 use crate::resource::{ReadResource, ResourceTransfer};
 use crate::session::{
@@ -51,6 +52,9 @@ pub enum GatewayMessage {
         stream: Option<RequestId>,
         body: Unhandled,
     },
+    /// The last message on a link: the gateway closes it next, and the node must not redial.
+    #[serde(rename = "rejected")]
+    Rejected { body: Rejection },
 }
 
 tagged!(
@@ -63,7 +67,8 @@ tagged!(
         "verdict",
         "answer",
         "chunk",
-        "unhandled"
+        "unhandled",
+        "rejected"
     ]
 );
 
@@ -197,6 +202,9 @@ pub enum NodeCall {
     /// Runs a tool the gateway published in its catalogue at `initialize`.
     #[serde(rename = "tool.call")]
     CallTool(CallTool),
+    /// Answered so updates go one at a time, and a later map never overtakes an earlier one.
+    #[serde(rename = "metadata.update")]
+    UpdateMetadata(UpdateMetadata),
 }
 
 tagged!(
@@ -207,7 +215,8 @@ tagged!(
         "sign_in.settled",
         "credential.health",
         "resource.read",
-        "tool.call"
+        "tool.call",
+        "metadata.update"
     ]
 );
 
@@ -224,6 +233,8 @@ pub enum NodeReply {
     ReadResource(ResourceTransfer),
     #[serde(rename = "tool.call")]
     CallTool(ToolOutcome),
+    #[serde(rename = "metadata.update")]
+    UpdateMetadata,
 }
 
 #[derive(Debug, thiserror::Error)]

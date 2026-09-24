@@ -22,7 +22,7 @@ use rax::transport::{
 };
 use rax::{
     Error, ErrorKind, Event, Frame, GatewayCall, GatewayMessage, GatewayReply, Link, LinkConfig,
-    NodeCall, NodeMessage, NodeReply, Open, ToolVerdict, Unhandled,
+    NodeCall, NodeMessage, NodeReply, Open, Rejection, ToolVerdict, Unhandled,
 };
 use serde_json::Value;
 use serde_json::value::RawValue;
@@ -95,6 +95,8 @@ pub enum NodeEvent {
     Refused {
         status: u16,
     },
+    /// Terminal: the gateway ended the link over metadata it cannot accept, and would again.
+    Rejected(Rejection),
     Request {
         id: RequestId,
         call: GatewayCall,
@@ -675,6 +677,13 @@ impl Route for Router {
             GatewayMessage::Answer { body } => self.emit(NodeEvent::Answer(body)).await,
             GatewayMessage::Unhandled { stream, body } => {
                 self.emit(NodeEvent::Unhandled { stream, body }).await
+            }
+            GatewayMessage::Rejected { body } => {
+                tracing::error!(key = ?body.key, reason = %body.message, "rax gateway rejected this node; not redialling");
+                self.emit(NodeEvent::Rejected(body)).await;
+                self.shared.core.end(Ended::Closed);
+                self.shared.fail_all(Ended::Closed);
+                Flow::Stop
             }
         }
     }

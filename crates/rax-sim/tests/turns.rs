@@ -13,7 +13,9 @@ use rax::event::StopReason;
 use rax::resource::ReadResource;
 use rax::session::{GatewayCapabilities, SessionDurability, ToolGate};
 use rax::tool::{DeniedBy, ToolCallStatus};
-use rax::{Decision, Event, NodeCall, NodeReply, PROTOCOL_VERSION};
+use rax::{
+    Decision, Event, Metadata, NodeCall, NodeReply, PROTOCOL_VERSION, Rejection, UpdateMetadata,
+};
 use rax_sim::{Entry, Match, NodeMethod, NodeOptions, Overlap, Transfer, VerdictPolicy};
 use rax_tokio::CallError;
 use rax_tokio::node::{NodeEvent, NodeLink};
@@ -307,4 +309,51 @@ async fn a_resource_read_is_served_or_refused_as_gone() {
     };
     assert_eq!(fault.kind, rax::ErrorKind::NotFound);
     node.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_simulator_takes_metadata_updates_and_can_reject_them() {
+    let sim = simulator(NodeOptions::default()).await;
+    let (node, mut events) = NodeLink::start(node_config(&sim)).unwrap();
+    assert!(matches!(
+        within(events.recv()).await,
+        Some(NodeEvent::Fresh)
+    ));
+    let sim_node = sim.next_node().await.unwrap();
+    let update = |value: serde_json::Value| {
+        let node = node.clone();
+        tokio::spawn(async move {
+            node.call(NodeCall::UpdateMetadata(UpdateMetadata {
+                metadata: Metadata::from([("murtaugh_access".to_owned(), value)]),
+            }))
+            .await
+        })
+    };
+
+    let accepted = update(serde_json::json!({"policy": "always_allow"}));
+    let call = sim_node.next_node_call().await.unwrap();
+    assert_eq!(call.method(), NodeMethod::UpdateMetadata);
+    call.reply().await.unwrap();
+    assert!(matches!(
+        within(accepted).await.unwrap(),
+        Ok(NodeReply::UpdateMetadata)
+    ));
+
+    let refused = update(serde_json::json!("everyone"));
+    let call = sim_node.next_node_call().await.unwrap();
+    call.reject(Rejection {
+        key: Some("murtaugh_access".into()),
+        message: "`murtaugh_access` must be an object".into(),
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        within(refused).await.unwrap(),
+        Err(CallError::Fault(fault)) if fault.kind == rax::ErrorKind::Rejected
+    ));
+    assert!(matches!(
+        within(events.recv()).await,
+        Some(NodeEvent::Rejected(_))
+    ));
+    assert!(within(events.recv()).await.is_none());
 }

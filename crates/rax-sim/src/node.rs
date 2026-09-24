@@ -12,7 +12,7 @@ use rax::session::{
 };
 use rax::{
     ContentBlock, Decision, Event, GatewayCall, GatewayMessage, GatewayReply, NodeCall, NodeReply,
-    Open, PROTOCOL_VERSION, ToolCall, ToolVerdict, Unhandled,
+    Open, PROTOCOL_VERSION, Rejection, ToolCall, ToolVerdict, Unhandled,
 };
 use rax_tokio::gateway::{GatewayLink, LinkEvent, LinkEvents, NodeIdentity, PendingReply};
 use rax_tokio::{Disconnect, SendError};
@@ -33,6 +33,7 @@ pub enum NodeMethod {
     CredentialHealth,
     ReadResource,
     CallTool,
+    UpdateMetadata,
 }
 
 impl NodeMethod {
@@ -43,6 +44,7 @@ impl NodeMethod {
             NodeCall::CredentialHealth(_) => Self::CredentialHealth,
             NodeCall::ReadResource(_) => Self::ReadResource,
             NodeCall::CallTool(_) => Self::CallTool,
+            NodeCall::UpdateMetadata(_) => Self::UpdateMetadata,
         }
     }
 
@@ -51,6 +53,7 @@ impl NodeMethod {
             Self::SignIn => NodeReply::SignIn,
             Self::SignInSettled => NodeReply::SignInSettled,
             Self::CredentialHealth => NodeReply::CredentialHealth,
+            Self::UpdateMetadata => NodeReply::UpdateMetadata,
             Self::ReadResource => {
                 let gone = rax::Error::new(ErrorKind::NotFound, "the simulator serves no bytes");
                 return link.fault(id, gone).await;
@@ -186,6 +189,19 @@ impl NodeCallRequest {
             .fault(self.id, error)
             .await
             .map_err(SimError::send("a node call fault"))
+    }
+
+    /// Faults the call as `rejected`, then ends the link the way a gateway refusing a node's
+    /// metadata does.
+    pub async fn reject(self, rejection: Rejection) -> Result<(), SimError> {
+        self.mark_answered();
+        let fault = rax::Error::new(ErrorKind::Rejected, rejection.message.clone());
+        self.link
+            .fault(self.id, fault)
+            .await
+            .map_err(SimError::send("a node call fault"))?;
+        self.link.reject(rejection).await;
+        Ok(())
     }
 
     fn mark_answered(&self) {
@@ -341,6 +357,11 @@ impl SimNode {
 
     pub fn link(&self) -> &GatewayLink {
         &self.shared.link
+    }
+
+    /// Ends the link over metadata, as a gateway does when a key it owns is malformed.
+    pub async fn reject(&self, rejection: Rejection) {
+        self.shared.link.reject(rejection).await;
     }
 
     pub fn set_options(&self, options: NodeOptions) {
