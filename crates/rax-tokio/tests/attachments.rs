@@ -6,9 +6,10 @@ use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use rax::attachment::MAX_ATTACHMENT_BYTES;
+use rax::attachment::{AttachmentReceipt, MAX_ATTACHMENT_BYTES, ReceiptOutcome};
 use rax_tokio::TransferError;
 use rax_tokio::gateway::LinkEvent;
+use rax_tokio::node::NodeEvent;
 use support::*;
 use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 
@@ -34,6 +35,34 @@ async fn a_ten_mebibyte_attachment_arrives_byte_identical() {
     };
     assert_eq!(transfer_id, sent);
     assert!(received == bytes, "the attachment was altered in transit");
+    node.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_gateway_tells_the_node_what_became_of_an_attachment() {
+    let (server, mut new_links) = gateway(gateway_config()).await;
+    let Pair {
+        node,
+        mut node_events,
+        link,
+        mut link_events,
+    } = connect(&mut new_links, node_config(server.local_addr())).await;
+
+    let sent = within(node.send_attachment(b"report")).await.unwrap();
+    let LinkEvent::Attachment { transfer_id, .. } = next_link(&mut link_events).await else {
+        panic!("expected an attachment")
+    };
+    let receipt = AttachmentReceipt {
+        transfer_id,
+        outcome: ReceiptOutcome::Failed,
+        reason: Some("the upload was refused".into()),
+    };
+    link.receipt(receipt.clone()).await.unwrap();
+    let NodeEvent::Receipt(received) = next(&mut node_events).await else {
+        panic!("expected a receipt")
+    };
+    assert_eq!(received.transfer_id, sent);
+    assert_eq!(received, receipt);
     node.close().await;
 }
 

@@ -48,6 +48,9 @@ pub struct GatewayCapabilities {
     /// that does ignores it and uses each session's groups instead. Absent means none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<ToolGroup>,
+    /// The gateway sends a `receipt` for each attachment to a node that declared this too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub attachment_receipts: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +72,9 @@ pub struct NodeCapabilities {
     /// there and no longer relies on the catalogue at `initialize`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tool_groups: bool,
+    /// The node reads a `receipt`, so a gateway that declared `attachment_receipts` sends them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub attachment_receipts: bool,
 }
 
 /// Whether a session outlives the node process is the node's to declare, because only the node
