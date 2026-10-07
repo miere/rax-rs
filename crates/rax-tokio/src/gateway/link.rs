@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use futures_util::Stream;
@@ -20,9 +20,11 @@ use tokio::io::AsyncRead;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use super::{Hub, NodeIdentity};
+use super::NodeIdentity;
 use crate::calls::Calls;
-use crate::connection::{Core, Disconnect, Ended, Flow, Route, lock};
+use crate::connection::{
+    Core, Disconnect, Ended, Flow, Half, Lifecycle, Owner, Route, Terminal, lock,
+};
 use crate::error::{CallError, SendError};
 use crate::transfer::{self, Reassembly, Settled, TransferError};
 
@@ -63,13 +65,48 @@ pub struct NewLink {
     pub events: LinkEvents,
 }
 
+/// What a gateway that dialled hears, on top of everything an accepted link does.
+#[derive(Debug)]
+pub enum DialledEvent {
+    /// The acceptor holds no state for this link: open calls failed, so send `initialize` again.
+    Fresh,
+    /// Terminal: redialling with the same token cannot succeed.
+    CredentialRejected,
+    /// Terminal: refused with a status redialling will not change, such as `403` from an acceptor
+    /// that does not serve gateways.
+    Refused {
+        status: u16,
+    },
+    Link(LinkEvent),
+}
+
+/// One channel for both ends, so a lifecycle event can never overtake the messages around it.
+pub(crate) enum Delivered {
+    Link(LinkEvent),
+    Fresh,
+    CredentialRejected,
+    Refused(u16),
+}
+
 pub struct LinkEvents {
-    receiver: mpsc::Receiver<LinkEvent>,
+    receiver: mpsc::Receiver<Delivered>,
 }
 
 impl LinkEvents {
     pub async fn recv(&mut self) -> Option<LinkEvent> {
-        self.receiver.recv().await
+        std::future::poll_fn(|cx| self.poll_link(cx)).await
+    }
+
+    /// An accepted link never carries the dialler's events, but skip them rather than trust that.
+    fn poll_link(&mut self, cx: &mut Context<'_>) -> Poll<Option<LinkEvent>> {
+        loop {
+            match self.receiver.poll_recv(cx) {
+                Poll::Ready(Some(Delivered::Link(event))) => return Poll::Ready(Some(event)),
+                Poll::Ready(Some(_)) => {}
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
     }
 }
 
@@ -77,7 +114,38 @@ impl Stream for LinkEvents {
     type Item = LinkEvent;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<LinkEvent>> {
-        self.receiver.poll_recv(cx)
+        self.poll_link(cx)
+    }
+}
+
+pub struct DialledEvents {
+    receiver: mpsc::Receiver<Delivered>,
+}
+
+impl DialledEvents {
+    pub async fn recv(&mut self) -> Option<DialledEvent> {
+        self.receiver.recv().await.map(DialledEvent::from)
+    }
+}
+
+impl Stream for DialledEvents {
+    type Item = DialledEvent;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<DialledEvent>> {
+        self.receiver
+            .poll_recv(cx)
+            .map(|delivered| delivered.map(DialledEvent::from))
+    }
+}
+
+impl From<Delivered> for DialledEvent {
+    fn from(delivered: Delivered) -> Self {
+        match delivered {
+            Delivered::Link(event) => Self::Link(event),
+            Delivered::Fresh => Self::Fresh,
+            Delivered::CredentialRejected => Self::CredentialRejected,
+            Delivered::Refused(status) => Self::Refused { status },
+        }
     }
 }
 
@@ -125,20 +193,23 @@ pub(crate) struct Shared {
     pub(crate) core: Arc<Core>,
     calls: Calls<GatewayReply>,
     streams: Mutex<HashMap<RequestId, mpsc::Sender<Open<Event>>>>,
-    events: Mutex<Option<mpsc::Sender<LinkEvent>>>,
+    events: Mutex<Option<mpsc::Sender<Delivered>>>,
     transfers: Mutex<Reassembly>,
     pub(crate) shutdown: CancellationToken,
     capacity: usize,
-    hub: Weak<Hub>,
+    pub(crate) owner: Owner,
 }
 
 impl Shared {
+    /// The receiver is the caller's to wrap: [`LinkEvents`] on an accepted link,
+    /// [`DialledEvents`] on a dialled one.
     pub(crate) fn new(
         identity: NodeIdentity,
         link: Link,
         capacity: usize,
-        hub: Weak<Hub>,
-    ) -> (Arc<Self>, LinkEvents) {
+        owner: Owner,
+    ) -> (Arc<Self>, mpsc::Receiver<Delivered>) {
+        let capacity = capacity.max(1);
         let (events, receiver) = mpsc::channel(capacity);
         let shared = Arc::new(Self {
             identity,
@@ -149,32 +220,33 @@ impl Shared {
             transfers: Mutex::new(Reassembly::default()),
             shutdown: CancellationToken::new(),
             capacity,
-            hub,
+            owner,
         });
-        (shared, LinkEvents { receiver })
+        (shared, receiver)
+    }
+
+    pub(crate) fn link_events(receiver: mpsc::Receiver<Delivered>) -> LinkEvents {
+        LinkEvents { receiver }
+    }
+
+    pub(crate) fn dialled_events(receiver: mpsc::Receiver<Delivered>) -> DialledEvents {
+        DialledEvents { receiver }
     }
 
     pub(crate) async fn emit(&self, event: LinkEvent) -> Flow {
-        let Some(events) = lock(&self.events).clone() else {
-            return Flow::Stop;
-        };
-        tokio::select! {
-            _ = events.send(event) => Flow::Continue,
-            _ = self.shutdown.cancelled() => Flow::Stop,
+        match self.deliver(Delivered::Link(event)).await {
+            true => Flow::Continue,
+            false => Flow::Stop,
         }
     }
 
-    pub(crate) fn finish(&self, terminal: LinkEvent, ended: Ended) {
-        if !self.core.end(ended) {
-            return;
-        }
-        self.calls.fail_all(ended);
-        lock(&self.streams).clear();
-        self.shutdown.cancel();
-        if let Some(events) = lock(&self.events).take() {
-            tokio::spawn(async move {
-                let _ = events.send(terminal).await;
-            });
+    async fn deliver(&self, delivered: Delivered) -> bool {
+        let Some(events) = lock(&self.events).clone() else {
+            return false;
+        };
+        tokio::select! {
+            _ = events.send(delivered) => true,
+            _ = self.shutdown.cancelled() => false,
         }
     }
 
@@ -193,7 +265,58 @@ pub struct GatewayLink {
     pub(crate) shared: Arc<Shared>,
 }
 
+impl Half for Shared {
+    type Router = Router;
+
+    fn core(&self) -> &Arc<Core> {
+        &self.core
+    }
+
+    fn router(self: &Arc<Self>) -> Router {
+        Router {
+            shared: self.clone(),
+        }
+    }
+
+    fn fail_all(&self, ended: Ended) {
+        self.calls.fail_all(ended);
+        lock(&self.streams).clear();
+        *lock(&self.transfers) = Reassembly::default();
+    }
+
+    async fn notify(&self, event: Lifecycle) -> bool {
+        let delivered = match event {
+            Lifecycle::Fresh => Delivered::Fresh,
+            Lifecycle::Resumed => Delivered::Link(LinkEvent::Resumed),
+            Lifecycle::Disconnected(reason) => Delivered::Link(LinkEvent::Disconnected { reason }),
+        };
+        self.deliver(delivered).await
+    }
+
+    fn finish(&self, terminal: Terminal) {
+        let ended = terminal.ended();
+        if !self.core.end(ended) {
+            return;
+        }
+        self.calls.fail_all(ended);
+        lock(&self.streams).clear();
+        self.shutdown.cancel();
+        let last = match terminal {
+            Terminal::Closed => Delivered::Link(LinkEvent::Closed),
+            Terminal::Replaced => Delivered::Link(LinkEvent::Replaced),
+            Terminal::CredentialRejected => Delivered::CredentialRejected,
+            Terminal::Refused(status) => Delivered::Refused(status),
+        };
+        if let Some(events) = lock(&self.events).take() {
+            tokio::spawn(async move {
+                let _ = events.send(last).await;
+            });
+        }
+    }
+}
+
 impl GatewayLink {
+    /// Who dialled, read from their token. Empty on a link this side dialled.
     pub fn identity(&self) -> &NodeIdentity {
         &self.shared.identity
     }
@@ -315,10 +438,7 @@ impl GatewayLink {
     }
 
     pub async fn close(&self) {
-        if let Some(hub) = self.shared.hub.upgrade() {
-            hub.forget(&self.shared);
-        }
-        self.shared.finish(LinkEvent::Closed, Ended::Closed);
+        self.shared.owner.close(&*self.shared).await;
     }
 
     async fn send(&self, message: &GatewayMessage) -> Result<(), SendError> {

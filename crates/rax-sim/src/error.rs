@@ -40,6 +40,8 @@ pub enum SimError {
     Serve(String),
     #[error("rax-sim: {0}")]
     Io(#[from] io::Error),
+    #[error("{0}")]
+    Endpoint(#[from] rax::transport::EndpointError),
     #[error("rax-sim: json: {0}")]
     Json(#[from] serde_json::Error),
 }

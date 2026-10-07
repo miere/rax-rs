@@ -323,6 +323,54 @@ pub(crate) trait Route {
     async fn route(&mut self, payload: Box<RawValue>) -> Flow;
 }
 
+/// What a transport end tells the role half riding on it. Delivery events, never messages.
+#[derive(Debug)]
+pub(crate) enum Lifecycle {
+    /// The acceptor holds nothing for this dialler: open calls failed, and the gateway role
+    /// starts over from `initialize`. Only a dialled half hears it; an accepted one is new.
+    Fresh,
+    Resumed,
+    Disconnected(Disconnect),
+}
+
+/// Why a role half ended for good.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Terminal {
+    /// Closed here, held past `retain_for`, or stopped serving.
+    Closed,
+    /// The dialler started a fresh link, which an acceptor hands out as a new half.
+    Replaced,
+    CredentialRejected,
+    Refused(u16),
+}
+
+impl Terminal {
+    pub(crate) fn ended(self) -> Ended {
+        match self {
+            Self::Replaced => Ended::Reset,
+            _ => Ended::Closed,
+        }
+    }
+}
+
+/// A role's message half, as either transport end drives it.
+pub(crate) trait Half: Send + Sync + Sized + 'static {
+    type Router: Route + Send + 'static;
+
+    fn core(&self) -> &Arc<Core>;
+
+    fn router(self: &Arc<Self>) -> Self::Router;
+
+    /// Fails every call, stream and transfer the peer can no longer answer.
+    fn fail_all(&self, ended: Ended);
+
+    /// False once nobody listens, which stops the transport.
+    fn notify(&self, event: Lifecycle) -> impl std::future::Future<Output = bool> + Send;
+
+    /// Ends the core and everything waiting on it, and tells the holder why, once.
+    fn finish(&self, terminal: Terminal);
+}
+
 pub(crate) async fn drive<S, R>(
     core: Arc<Core>,
     socket: WebSocketStream<S>,
@@ -445,5 +493,46 @@ where
         Err(_) => Err(Disconnect::WriteTimeout),
         Ok(Err(err)) => Err(Disconnect::Io(err.to_string())),
         Ok(Ok(())) => Ok(()),
+    }
+}
+
+/// Who keeps a half's link, and so what closing it from the holder's side means.
+pub(crate) enum Owner {
+    /// The supervisor task, filled in once spawned. Closing stops it from redialling.
+    Dialler(Mutex<Option<tokio::task::JoinHandle<()>>>),
+    /// The acceptor's hub. Closing forgets the link there, so a resume starts fresh.
+    Acceptor {
+        hub: std::sync::Weak<crate::accept::Hub>,
+        key: crate::accept::Key,
+    },
+}
+
+impl Owner {
+    pub(crate) fn dialler() -> Self {
+        Self::Dialler(Mutex::new(None))
+    }
+
+    pub(crate) fn supervised_by(&self, supervisor: tokio::task::JoinHandle<()>) {
+        if let Self::Dialler(slot) = self {
+            *lock(slot) = Some(supervisor);
+        }
+    }
+
+    pub(crate) async fn close<H: Half>(&self, half: &H) {
+        match self {
+            Self::Dialler(supervisor) => {
+                half.finish(Terminal::Closed);
+                let supervisor = lock(supervisor).take();
+                if let Some(supervisor) = supervisor {
+                    let _ = supervisor.await;
+                }
+            }
+            Self::Acceptor { hub, key } => {
+                if let Some(hub) = hub.upgrade() {
+                    hub.forget(key, half.core());
+                }
+                half.finish(Terminal::Closed);
+            }
+        }
     }
 }

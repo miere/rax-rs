@@ -126,6 +126,11 @@ pub struct TestNode {
 impl TestNode {
     pub fn start(config: NodeConfig, script: Script) -> Self {
         let (handle, events) = NodeLink::start(config).unwrap();
+        Self::serving(handle, events, script)
+    }
+
+    /// A node on either end of the connection, such as one an acceptor handed out.
+    pub fn serving(handle: NodeHandle, events: NodeEvents, script: Script) -> Self {
         let (lifecycle_tx, lifecycle) = mpsc::unbounded_channel();
         tokio::spawn(serve(handle.clone(), events, script, lifecycle_tx));
         Self { handle, lifecycle }
