@@ -15,7 +15,10 @@ use rax::{
     ContentBlock, Decision, Event, GatewayCall, GatewayMessage, GatewayReply, NodeCall, NodeReply,
     Open, PROTOCOL_VERSION, Rejection, ToolCall, ToolGroup, ToolOutcome, ToolVerdict, Unhandled,
 };
-use rax_tokio::gateway::{GatewayLink, LinkEvent, LinkEvents, NodeIdentity, PendingReply};
+use rax_tokio::dial::DialConfig;
+use rax_tokio::gateway::{
+    DialledEvent, DialledEvents, GatewayLink, LinkEvent, LinkEvents, NodeIdentity, PendingReply,
+};
 use rax_tokio::{Disconnect, SendError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -275,6 +278,14 @@ pub enum LinkChange {
     /// Terminal: the node started a fresh link, which arrives as a new `SimNode`.
     Replaced,
     Closed,
+    /// Only when the gateway dials: the acceptor held nothing for this link, so the same
+    /// `SimNode` carries on and sends `initialize` again.
+    Fresh,
+    /// Terminal, only when the gateway dials: the acceptor refused with a status redialling will
+    /// not change, such as `401` or `403`.
+    Refused {
+        status: u16,
+    },
 }
 
 pub(crate) struct NodeShared {
@@ -292,6 +303,22 @@ pub(crate) struct NodeShared {
 }
 
 impl NodeShared {
+    fn new(link: GatewayLink, options: NodeOptions, wait: Duration, started: Instant) -> Arc<Self> {
+        Arc::new(NodeShared {
+            link,
+            wait,
+            started,
+            options: Mutex::new(options),
+            log: Arc::default(),
+            groups: Arc::default(),
+            calls: Inbox::new(),
+            background: Inbox::new(),
+            transfers: Inbox::new(),
+            unhandled: Inbox::new(),
+            changes: Inbox::new(),
+        })
+    }
+
     fn verdicts(&self) -> VerdictPolicy {
         lock(&self.options).verdicts.clone()
     }
@@ -371,21 +398,24 @@ impl SimNode {
         wait: Duration,
         started: Instant,
     ) -> Self {
-        let shared = Arc::new(NodeShared {
-            link,
-            wait,
-            started,
-            options: Mutex::new(options),
-            log: Arc::default(),
-            groups: Arc::default(),
-            calls: Inbox::new(),
-            background: Inbox::new(),
-            transfers: Inbox::new(),
-            unhandled: Inbox::new(),
-            changes: Inbox::new(),
-        });
+        let shared = NodeShared::new(link, options, wait, started);
         tokio::spawn(pump(events, shared.clone()));
         Self { shared }
+    }
+
+    /// The "gateway dials" mode: this simulated gateway dials an acceptor that plays the node,
+    /// such as a server relaying a person's editor, and drives it exactly as it would a node that
+    /// dialled in. One `SimNode` lives across fresh links: wait for [`LinkChange::Fresh`], which
+    /// also arrives first, and send `initialize` after each.
+    pub fn dial(
+        config: DialConfig,
+        options: NodeOptions,
+        wait: Duration,
+    ) -> Result<Self, SimError> {
+        let (link, events) = GatewayLink::dial(config)?;
+        let shared = NodeShared::new(link, options, wait, Instant::now());
+        tokio::spawn(pump_dialled(events, shared.clone()));
+        Ok(Self { shared })
     }
 
     pub fn identity(&self) -> &NodeIdentity {
@@ -663,6 +693,36 @@ pub(crate) fn unexpected(call: &'static str, reply: &GatewayReply) -> SimError {
 async fn pump(mut events: LinkEvents, shared: Arc<NodeShared>) {
     let mut ended = "the link ended";
     while let Some(event) = events.recv().await {
+        shared.link_event(event, &mut ended).await;
+    }
+    shared.end(ended);
+}
+
+async fn pump_dialled(mut events: DialledEvents, shared: Arc<NodeShared>) {
+    let mut ended = "the link ended";
+    while let Some(event) = events.recv().await {
+        match event {
+            DialledEvent::Link(event) => shared.link_event(event, &mut ended).await,
+            DialledEvent::Fresh => {
+                lock(&shared.groups).clear();
+                shared.changes.push(LinkChange::Fresh);
+            }
+            DialledEvent::CredentialRejected => {
+                ended = "the acceptor rejected the token";
+                shared.changes.push(LinkChange::Refused { status: 401 });
+            }
+            DialledEvent::Refused { status } => {
+                ended = "the acceptor refused the link";
+                shared.changes.push(LinkChange::Refused { status });
+            }
+        }
+    }
+    shared.end(ended);
+}
+
+impl NodeShared {
+    async fn link_event(&self, event: LinkEvent, ended: &mut &'static str) {
+        let shared = self;
         match event {
             LinkEvent::Request { id, call } => shared.request(id, call).await,
             LinkEvent::Background { session_id, event } => {
@@ -688,18 +748,21 @@ async fn pump(mut events: LinkEvents, shared: Arc<NodeShared>) {
                 shared.changes.push(LinkChange::Disconnected(reason));
             }
             LinkEvent::Replaced => {
-                ended = "the node replaced the link";
+                *ended = "the node replaced the link";
                 shared.changes.push(LinkChange::Replaced);
             }
             LinkEvent::Closed => {
-                ended = "the link was closed";
+                *ended = "the link was closed";
                 shared.changes.push(LinkChange::Closed);
             }
         }
     }
-    shared.calls.end(ended, false);
-    shared.background.end(ended, false);
-    shared.transfers.end(ended, false);
-    shared.unhandled.end(ended, false);
-    shared.changes.end(ended, false);
+
+    fn end(&self, ended: &str) {
+        self.calls.end(ended, false);
+        self.background.end(ended, false);
+        self.transfers.end(ended, false);
+        self.unhandled.end(ended, false);
+        self.changes.end(ended, false);
+    }
 }
