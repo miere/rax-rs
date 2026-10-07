@@ -4,7 +4,7 @@ use crate::content::ContentBlock;
 use crate::id::SessionId;
 use crate::metadata::Metadata;
 use crate::open::{Open, Unhandled};
-use crate::tool::ToolCatalogue;
+use crate::tool::ToolGroup;
 
 /// Negotiated at `initialize`, unlike the frame version: nodes and gateways upgrade on their own
 /// schedules, so an older peer must still be served.
@@ -44,10 +44,10 @@ pub struct GatewayCapabilities {
     /// Schemes whose links a node can fetch with `resource.read`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub readable_schemes: Vec<String>,
-    /// Unlike the flags above this carries the capability itself, because a node cannot publish a
-    /// tool it only knows the existence of. Absent means this gateway offers none.
+    /// Deprecated: the per-link catalogue, for nodes that do not declare `tool_groups`. A node
+    /// that does ignores it and uses each session's groups instead. Absent means none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools: Option<ToolCatalogue>,
+    pub tools: Option<ToolGroup>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +65,10 @@ pub struct NodeCapabilities {
     pub tool_gate: ToolGate,
     #[serde(default)]
     pub sessions: SessionDurability,
+    /// The node takes its gateway tools from each `session.new`, so a gateway sends it groups
+    /// there and no longer relies on the catalogue at `initialize`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tool_groups: bool,
 }
 
 /// Whether a session outlives the node process is the node's to declare, because only the node
@@ -109,6 +113,10 @@ pub struct PromptCapabilities {
 pub struct NewSession {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context: Vec<Open<ContentBlock>>,
+    /// Every gateway tool the session will see, fixed for its lifetime. Sent only to nodes that
+    /// declared `tool_groups`; absent or empty means none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_groups: Vec<ToolGroup>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

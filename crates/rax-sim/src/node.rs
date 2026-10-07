@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,7 +13,7 @@ use rax::session::{
 };
 use rax::{
     ContentBlock, Decision, Event, GatewayCall, GatewayMessage, GatewayReply, NodeCall, NodeReply,
-    Open, PROTOCOL_VERSION, Rejection, ToolCall, ToolVerdict, Unhandled,
+    Open, PROTOCOL_VERSION, Rejection, ToolCall, ToolGroup, ToolOutcome, ToolVerdict, Unhandled,
 };
 use rax_tokio::gateway::{GatewayLink, LinkEvent, LinkEvents, NodeIdentity, PendingReply};
 use rax_tokio::{Disconnect, SendError};
@@ -154,8 +155,12 @@ pub struct NodeCallRequest {
     index: usize,
     link: GatewayLink,
     log: Arc<Mutex<CallLog>>,
+    groups: Arc<Mutex<SessionGroups>>,
     started: Instant,
 }
+
+/// The namespaces each session was opened with, which is all a gateway checks a call against.
+type SessionGroups = HashMap<SessionId, Vec<String>>;
 
 impl NodeCallRequest {
     pub fn method(&self) -> NodeMethod {
@@ -181,6 +186,35 @@ impl NodeCallRequest {
             .await
             .map(drop)
             .map_err(|err| SimError::Serve(err.to_string()))
+    }
+
+    /// Answers `tool.call` with `outcome`, unless the call names a group its session was not
+    /// opened with: that is faulted `forbidden`, as a gateway must whatever the node does. A call
+    /// with no namespace is for the deprecated catalogue and is answered as it is.
+    pub async fn answer_tool(self, outcome: ToolOutcome) -> Result<(), SimError> {
+        let NodeCall::CallTool(call) = &self.call else {
+            return Err(SimError::NotAToolCall(self.method()));
+        };
+        if let Some(namespace) = &call.namespace {
+            let lent = lock(&self.groups)
+                .get(&call.session_id)
+                .is_some_and(|groups| groups.contains(namespace));
+            if !lent {
+                let unlent = rax::Error::new(
+                    ErrorKind::Forbidden,
+                    format!(
+                        "session {} was not opened with {namespace}",
+                        call.session_id
+                    ),
+                );
+                return self.fault(unlent).await;
+            }
+        }
+        self.mark_answered();
+        self.link
+            .reply(self.id, NodeReply::CallTool(outcome))
+            .await
+            .map_err(SimError::send("a tool call reply"))
     }
 
     pub async fn fault(self, error: rax::Error) -> Result<(), SimError> {
@@ -249,6 +283,7 @@ pub(crate) struct NodeShared {
     started: Instant,
     options: Mutex<NodeOptions>,
     log: Arc<Mutex<CallLog>>,
+    groups: Arc<Mutex<SessionGroups>>,
     calls: Inbox<NodeCallRequest>,
     background: Inbox<(SessionId, Open<BackgroundEvent>)>,
     transfers: Inbox<(TransferId, Transfer)>,
@@ -307,6 +342,7 @@ impl NodeShared {
             index,
             link: self.link.clone(),
             log: self.log.clone(),
+            groups: self.groups.clone(),
             started: self.started,
         });
     }
@@ -341,6 +377,7 @@ impl SimNode {
             started,
             options: Mutex::new(options),
             log: Arc::default(),
+            groups: Arc::default(),
             calls: Inbox::new(),
             background: Inbox::new(),
             transfers: Inbox::new(),
@@ -394,9 +431,30 @@ impl SimNode {
         &self,
         context: Vec<Open<ContentBlock>>,
     ) -> Result<SessionCreated, SimError> {
-        let call = GatewayCall::NewSession(NewSession { context });
-        match self.call("session.new", call).await? {
-            GatewayReply::NewSession(created) => Ok(created),
+        self.open_session(NewSession {
+            context,
+            ..Default::default()
+        })
+        .await
+    }
+
+    /// Opens a session lending it `tool_groups`, and remembers them so
+    /// [`NodeCallRequest::answer_tool`] refuses a call for any other group. A group the node lists
+    /// as unhandled is still remembered: the gateway lent it, whatever the node did with it.
+    pub async fn open_session(&self, request: NewSession) -> Result<SessionCreated, SimError> {
+        let namespaces: Vec<String> = request
+            .tool_groups
+            .iter()
+            .map(|group: &ToolGroup| group.namespace.clone())
+            .collect();
+        match self
+            .call("session.new", GatewayCall::NewSession(request))
+            .await?
+        {
+            GatewayReply::NewSession(created) => {
+                lock(&self.shared.groups).insert(created.session_id.clone(), namespaces);
+                Ok(created)
+            }
             other => Err(unexpected("session.new", &other)),
         }
     }

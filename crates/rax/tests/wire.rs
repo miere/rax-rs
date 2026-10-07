@@ -9,7 +9,7 @@ use rax::open::{Subject, Tagged, UnhandledReason};
 use rax::resource::{ReadResource, ResourceTransfer};
 use rax::session::{
     GatewayCapabilities, Initialize, Initialized, NewSession, NodeCapabilities, Prompt,
-    PromptAccepted, SessionDurability, ToolGate,
+    PromptAccepted, SessionCreated, SessionDurability, ToolGate,
 };
 use rax::tool::{DeniedBy, ToolCallStatus, ToolCallUpdate, ToolKind};
 use rax::*;
@@ -130,6 +130,7 @@ fn ui_context_travels_as_resource_links_the_protocol_never_interprets() {
                 context: vec![
                     ContentBlock::link("chat://workspace/channel/thread-42", "thread").into(),
                 ],
+                ..Default::default()
             }),
         ),
         json!({"k": "req", "id": "2", "method": "session.new", "body": {"context": [
@@ -639,7 +640,7 @@ fn a_gateway_publishes_its_tools_at_initialize() {
             GatewayCall::Initialize(Initialize {
                 protocol_version: 1,
                 capabilities: GatewayCapabilities {
-                    tools: Some(ToolCatalogue {
+                    tools: Some(ToolGroup {
                         namespace: "murtaugh".into(),
                         tools: vec![ToolDef {
                             name: "slack_read_message".into(),
@@ -678,6 +679,7 @@ fn a_tool_that_ran_and_failed_is_still_a_reply() {
             id: "n4".into(),
             call: NodeCall::CallTool(CallTool {
                 session_id: "s1".into(),
+                namespace: None,
                 name: "slack_read_message".into(),
                 arguments: Some(json!({"link": "https://slack.com/archives/C1/p1"})),
             })
@@ -829,4 +831,117 @@ fn a_metadata_key_names_its_gateway_before_the_first_underscore() {
     ]);
     let owned: Vec<_> = owned_by(&metadata, "murtaugh").collect();
     assert_eq!(owned, [("access", &json!("always_allow"))]);
+}
+
+#[test]
+fn a_session_opens_with_the_tool_groups_it_will_see() {
+    assert_wire(
+        &request(
+            "2",
+            GatewayCall::NewSession(NewSession {
+                context: vec![],
+                tool_groups: vec![
+                    ToolGroup {
+                        namespace: "slack".into(),
+                        tools: vec![ToolDef {
+                            name: "attach".into(),
+                            description: "Attach a file to the thread.".into(),
+                            input_schema: Some(json!({"type": "object"})),
+                            kind: ToolKind::Edit,
+                        }],
+                    },
+                    ToolGroup {
+                        namespace: "openknowledge_x7k2".into(),
+                        tools: vec![ToolDef {
+                            name: "read".into(),
+                            description: "Read the open document.".into(),
+                            input_schema: None,
+                            kind: ToolKind::Read,
+                        }],
+                    },
+                ],
+            }),
+        ),
+        json!({"k": "req", "id": "2", "method": "session.new", "body": {"tool_groups": [
+               {"namespace": "slack", "tools": [{"name": "attach",
+                "description": "Attach a file to the thread.", "input_schema": {"type": "object"},
+                "kind": "edit"}]},
+               {"namespace": "openknowledge_x7k2", "tools": [{"name": "read",
+                "description": "Read the open document.", "kind": "read"}]}]}}),
+    );
+    // A gateway that lends nothing, or predates groups, sends no key at all.
+    let bare: NewSession = serde_json::from_value(json!({})).unwrap();
+    assert!(bare.tool_groups.is_empty());
+}
+
+/// A node that cannot publish a group still opens the session, and says which group it left out.
+#[test]
+fn a_node_reports_a_group_it_did_not_publish() {
+    assert_wire(
+        &NodeMessage::Reply {
+            id: "2".into(),
+            reply: GatewayReply::NewSession(SessionCreated {
+                session_id: "s1".into(),
+                unhandled: vec![Unhandled {
+                    subject: Subject::ToolGroup {
+                        namespace: "github".into(),
+                    },
+                    reason: UnhandledReason::Other,
+                    message: Some("this machine already has a tool server named github".into()),
+                }],
+            }),
+        },
+        json!({"k": "res", "id": "2", "method": "session.new", "body": {"session_id": "s1",
+               "unhandled": [{"subject": "tool_group", "namespace": "github", "reason": "other",
+               "message": "this machine already has a tool server named github"}]}}),
+    );
+}
+
+#[test]
+fn a_tool_call_names_the_group_it_belongs_to() {
+    assert_wire(
+        &NodeMessage::Request {
+            id: "n4".into(),
+            call: NodeCall::CallTool(CallTool {
+                session_id: "s1".into(),
+                namespace: Some("slack".into()),
+                name: "attach".into(),
+                arguments: None,
+            })
+            .into(),
+        },
+        json!({"k": "req", "id": "n4", "method": "tool.call",
+               "body": {"session_id": "s1", "namespace": "slack", "name": "attach"}}),
+    );
+}
+
+/// The capability is left off the wire when false, so an older gateway sees exactly what it did.
+#[test]
+fn a_node_declares_it_takes_tools_per_session() {
+    let declared = NodeCapabilities {
+        tool_groups: true,
+        ..Default::default()
+    };
+    let encoded = serde_json::to_value(&declared).unwrap();
+    assert_eq!(encoded["tool_groups"], json!(true));
+    let older: NodeCapabilities = serde_json::from_value(json!({})).unwrap();
+    assert!(!older.tool_groups);
+    assert!(
+        serde_json::to_value(&older)
+            .unwrap()
+            .get("tool_groups")
+            .is_none()
+    );
+}
+
+#[test]
+fn a_namespace_fits_a_tool_name_and_nothing_else() {
+    assert!(ToolGroup::is_valid_namespace("slack"));
+    assert!(ToolGroup::is_valid_namespace("openknowledge_x7k2"));
+    assert!(ToolGroup::is_valid_namespace(&"a".repeat(32)));
+    assert!(!ToolGroup::is_valid_namespace(&"a".repeat(33)));
+    assert!(!ToolGroup::is_valid_namespace(""));
+    assert!(!ToolGroup::is_valid_namespace("Slack"));
+    assert!(!ToolGroup::is_valid_namespace("open-knowledge"));
+    assert!(!ToolGroup::is_valid_namespace("slack.tools"));
 }

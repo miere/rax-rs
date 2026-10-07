@@ -40,17 +40,39 @@ pub enum ToolKind {
     Other,
 }
 
-/// The tools a gateway runs on a node's behalf, declared once at `initialize`. A node publishes
+/// The longest namespace a group may have, so `mcp__<namespace>__<name>` stays within the tool
+/// name limit of the agents a node runs.
+pub const MAX_NAMESPACE_LEN: usize = 32;
+
+/// Tools a gateway runs on a node's behalf, lent to one session when it opens. A node publishes
 /// them to its agent and invokes them with `tool.call`; it never learns what any of them do, which
 /// is what lets a gateway add one without the node shipping a release.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolCatalogue {
-    /// Qualifies every name on the node, so a gateway decides what its own tools are called rather
-    /// than answering to a constant compiled into the node.
+pub struct ToolGroup {
+    /// The group's only identifier: unique within a session, and what qualifies every name on the
+    /// node, so a gateway decides what its tools are called rather than answering to a constant
+    /// compiled into the node.
     pub namespace: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolDef>,
 }
+
+impl ToolGroup {
+    /// `[a-z0-9_]`, at most [`MAX_NAMESPACE_LEN`] characters and never empty. A node refuses a
+    /// group whose namespace is not, rather than publish a name its agent would mangle.
+    pub fn is_valid_namespace(namespace: &str) -> bool {
+        !namespace.is_empty()
+            && namespace.len() <= MAX_NAMESPACE_LEN
+            && namespace
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    }
+}
+
+/// The per-link catalogue a gateway sends at `initialize`, kept only for nodes that do not declare
+/// `tool_groups`. It has the same shape as a group.
+#[deprecated(note = "gateways lend tools per session in `session.new`; use `ToolGroup`")]
+pub type ToolCatalogue = ToolGroup;
 
 /// `kind` is the gateway's, not the node's: only the gateway knows whether its tool reads or
 /// destroys, and a node that guessed from the name would mislabel every card it draws.
@@ -65,13 +87,16 @@ pub struct ToolDef {
     pub kind: ToolKind,
 }
 
-/// Runs one catalogued tool. A gateway serves only names it published to the asking node, so a
+/// Runs one tool a gateway lent. A gateway serves only groups the session was opened with, so a
 /// node cannot reach a tool by guessing; anything else is `forbidden`, as for resources.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallTool {
     /// Binds the call to a conversation, because a gateway's tools act inside one — which thread
     /// to post to is the gateway's to resolve, and never travels to the node.
     pub session_id: SessionId,
+    /// The group the tool belongs to. Absent means the deprecated catalogue sent at `initialize`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arguments: Option<Value>,
