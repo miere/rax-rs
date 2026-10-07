@@ -4,7 +4,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use crate::attachment::TransferChunk;
+use crate::attachment::{AttachmentReceipt, TransferChunk};
 use crate::credential::{CredentialHealth, CredentialRenewal};
 use crate::error::Error;
 use crate::event::{BackgroundEvent, Event};
@@ -45,6 +45,9 @@ pub enum GatewayMessage {
     /// Only in answer to `resource.read`, after its reply.
     #[serde(rename = "chunk")]
     Chunk { body: TransferChunk },
+    /// What became of an attachment, keyed by its transfer.
+    #[serde(rename = "receipt")]
+    Receipt { body: AttachmentReceipt },
     /// `stream` is absent when what went unhandled belonged to no turn.
     #[serde(rename = "unhandled")]
     Unhandled {
@@ -67,6 +70,7 @@ tagged!(
         "verdict",
         "answer",
         "chunk",
+        "receipt",
         "unhandled",
         "rejected"
     ]

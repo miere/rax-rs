@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rax::ErrorKind;
+use rax::attachment::AttachmentReceipt;
 use rax::credential::CredentialRenewal;
 use rax::event::BackgroundEvent;
 use rax::id::{RequestId, SessionId, ToolCallId, TransferId};
@@ -601,6 +602,16 @@ impl SimNode {
             .answer(answer)
             .await
             .map_err(SimError::send("an answer"))
+    }
+
+    /// Tells the node what became of an attachment, as a gateway that declared
+    /// `attachment_receipts` does.
+    pub async fn receipt(&self, receipt: AttachmentReceipt) -> Result<(), SimError> {
+        self.shared
+            .link
+            .receipt(receipt)
+            .await
+            .map_err(SimError::send("a receipt"))
     }
 
     pub async fn next_node_call(&self) -> Result<NodeCallRequest, SimError> {

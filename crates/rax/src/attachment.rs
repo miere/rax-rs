@@ -26,6 +26,28 @@ pub struct Attachment {
     pub mimetype: Option<String>,
 }
 
+/// What became of an attachment, sent by a gateway that declared `attachment_receipts` to a node
+/// that declared it too, once per attachment event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentReceipt {
+    pub transfer_id: TransferId,
+    pub outcome: ReceiptOutcome,
+    /// Why it failed, worded to be passed on to the person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptOutcome {
+    /// The person can see the file, not merely the gateway holding its bytes.
+    Delivered,
+    Failed,
+    /// From a newer gateway: the node cannot tell either way.
+    #[serde(other)]
+    Unknown,
+}
+
 /// `seq` lets a receiver spot a missing chunk instead of delivering a truncated file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferChunk {

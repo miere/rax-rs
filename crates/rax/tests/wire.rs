@@ -1,4 +1,4 @@
-use rax::attachment::{ChunkPart, TransferChunk};
+use rax::attachment::{AttachmentReceipt, ChunkPart, ReceiptOutcome, TransferChunk};
 use rax::credential::CredentialRenewal;
 use rax::error::{ProviderFailure, RpcFailure};
 use rax::event::StopReason;
@@ -46,12 +46,13 @@ fn initialize_negotiates_version_and_capabilities() {
                     resource_schemes: vec!["chat".into()],
                     readable_schemes: vec!["gateway".into()],
                     tools: None,
+                    attachment_receipts: true,
                 },
             }),
         ),
         json!({"k": "req", "id": "1", "method": "initialize", "body": {"protocol_version": 1,
                "capabilities": {"question": true, "plan": false, "sign_in": true, "resource_schemes": ["chat"],
-               "readable_schemes": ["gateway"]}}}),
+               "readable_schemes": ["gateway"], "attachment_receipts": true}}}),
     );
     assert_wire(
         &NodeMessage::Reply {
@@ -387,6 +388,45 @@ fn answers_travel_keyed_by_the_prompt() {
         json!({"k": "answer", "body": {"id": "q1", "outcome": "answered",
                "answers": {"colour": ["blue"]}, "user_id": "U1"}}),
     );
+}
+
+#[test]
+fn receipts_travel_keyed_by_the_transfer() {
+    assert_wire(
+        &GatewayMessage::Receipt {
+            body: AttachmentReceipt {
+                transfer_id: "t1".into(),
+                outcome: ReceiptOutcome::Delivered,
+                reason: None,
+            },
+        },
+        json!({"k": "receipt", "body": {"transfer_id": "t1", "outcome": "delivered"}}),
+    );
+    assert_wire(
+        &GatewayMessage::Receipt {
+            body: AttachmentReceipt {
+                transfer_id: "t2".into(),
+                outcome: ReceiptOutcome::Failed,
+                reason: Some("Slack refused the upload".into()),
+            },
+        },
+        json!({"k": "receipt", "body": {"transfer_id": "t2", "outcome": "failed",
+               "reason": "Slack refused the upload"}}),
+    );
+    let newer: AttachmentReceipt =
+        serde_json::from_value(json!({"transfer_id": "t3", "outcome": "queued"})).unwrap();
+    assert_eq!(newer.outcome, ReceiptOutcome::Unknown);
+}
+
+#[test]
+fn attachment_receipts_are_off_unless_declared() {
+    let gateway: GatewayCapabilities = serde_json::from_value(json!({})).unwrap();
+    assert!(!gateway.attachment_receipts);
+    let node: NodeCapabilities = serde_json::from_value(json!({})).unwrap();
+    assert!(!node.attachment_receipts);
+    let declared: NodeCapabilities =
+        serde_json::from_value(json!({"attachment_receipts": true})).unwrap();
+    assert!(declared.attachment_receipts);
 }
 
 #[test]

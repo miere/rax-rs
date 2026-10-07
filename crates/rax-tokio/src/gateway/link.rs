@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use futures_util::Stream;
+use rax::attachment::AttachmentReceipt;
 use rax::event::BackgroundEvent;
 use rax::id::{RequestId, SessionId, TransferId};
 use rax::interaction::DisplayAnswer;
@@ -348,6 +349,12 @@ impl GatewayLink {
 
     pub async fn answer(&self, body: DisplayAnswer) -> Result<(), SendError> {
         self.send(&GatewayMessage::Answer { body }).await
+    }
+
+    /// Tells the node what became of an attachment. Only for a node that declared
+    /// `attachment_receipts`; any other answers it with `unhandled`.
+    pub async fn receipt(&self, body: AttachmentReceipt) -> Result<(), SendError> {
+        self.send(&GatewayMessage::Receipt { body }).await
     }
 
     pub async fn reply(&self, id: RequestId, reply: NodeReply) -> Result<(), SendError> {

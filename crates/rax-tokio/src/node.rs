@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use futures_util::Stream;
-use rax::attachment::MAX_ATTACHMENT_BYTES;
+use rax::attachment::{AttachmentReceipt, MAX_ATTACHMENT_BYTES};
 use rax::event::BackgroundEvent;
 use rax::id::{RequestId, SessionId, TransferId};
 use rax::interaction::DisplayAnswer;
@@ -62,6 +62,7 @@ pub enum NodeEvent {
     },
     Verdict(ToolVerdict),
     Answer(DisplayAnswer),
+    Receipt(AttachmentReceipt),
     Unhandled {
         stream: Option<RequestId>,
         body: Unhandled,
@@ -516,6 +517,7 @@ impl Route for Router {
             }
             GatewayMessage::Verdict { body } => self.emit(NodeEvent::Verdict(body)).await,
             GatewayMessage::Answer { body } => self.emit(NodeEvent::Answer(body)).await,
+            GatewayMessage::Receipt { body } => self.emit(NodeEvent::Receipt(body)).await,
             GatewayMessage::Unhandled { stream, body } => {
                 self.emit(NodeEvent::Unhandled { stream, body }).await
             }
