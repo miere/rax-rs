@@ -307,3 +307,32 @@ async fn an_accepted_node_ends_when_its_gateway_stays_away() {
     let reply = node.call(NodeCall::ReadResource(read("file:///a"))).await;
     assert!(matches!(reply, Err(CallError::Closed)));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unbound_acceptor_serves_connections_its_caller_accepted() {
+    let (acceptor, mut accepted) = Acceptor::unbound(Tokens, accept_config(vec![Role::Gateway]));
+    let acceptor = std::sync::Arc::new(acceptor);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn({
+        let acceptor = acceptor.clone();
+        async move {
+            while let Ok((stream, peer)) = listener.accept().await {
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move { acceptor.serve(stream, peer).await });
+            }
+        }
+    });
+    let (link, mut link_events) = Dialler::gateway(dial_config(addr, USER_TOKEN)).unwrap();
+    assert!(matches!(
+        next_dialled(&mut link_events).await,
+        DialledEvent::Fresh
+    ));
+    let NewNodeLink {
+        handle: node,
+        events: mut node_events,
+        ..
+    } = accepted_gateway(&mut accepted).await;
+    initialize(&link, &node, &mut node_events).await;
+    link.close().await;
+}

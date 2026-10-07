@@ -103,7 +103,8 @@ pub enum Accepted {
 pub struct Acceptor {
     local_addr: SocketAddr,
     hub: Arc<Hub>,
-    accept: JoinHandle<()>,
+    /// `None` when the caller accepts connections itself and hands them to [`Acceptor::serve`].
+    accept: Option<JoinHandle<()>>,
 }
 
 impl Acceptor {
@@ -114,6 +115,19 @@ impl Acceptor {
     ) -> io::Result<(Self, AcceptedLinks)> {
         let listener = TcpListener::bind(addr).await?;
         let local_addr = listener.local_addr()?;
+        let (mut acceptor, links) = Self::unbound(authenticator, config);
+        acceptor.local_addr = local_addr;
+        acceptor.accept = Some(tokio::spawn(accept_loop(listener, acceptor.hub.clone())));
+        Ok((acceptor, links))
+    }
+
+    /// An acceptor that listens on nothing: the caller accepts each connection, such as on a
+    /// port it shares with other protocols, and hands it to [`Acceptor::serve`]. Its
+    /// [`Acceptor::local_addr`] is the unspecified address.
+    pub fn unbound(
+        authenticator: impl Authenticator,
+        config: AcceptConfig,
+    ) -> (Self, AcceptedLinks) {
         let (accepted, receiver) = mpsc::channel(config.events_capacity.max(1));
         let hub = Arc::new(Hub {
             authenticator: Box::new(authenticator),
@@ -122,13 +136,22 @@ impl Acceptor {
             accepted,
             serving: AtomicBool::new(true),
         });
-        let accept = tokio::spawn(accept_loop(listener, hub.clone()));
         let acceptor = Self {
-            local_addr,
+            local_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
             hub,
-            accept,
+            accept: None,
         };
-        Ok((acceptor, AcceptedLinks { receiver }))
+        (acceptor, AcceptedLinks { receiver })
+    }
+
+    /// Serves one connection someone else accepted, from its HTTP upgrade request on, so nothing
+    /// may have been read from it yet. Returns once the connection ends; the link it carried
+    /// waits for a resume as usual.
+    pub async fn serve<S>(&self, stream: S, peer: SocketAddr)
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        serve(self.hub.clone(), stream, peer).await;
     }
 
     /// For a cluster member that stops serving, such as a leader that lost its lease: every
@@ -155,7 +178,9 @@ impl Acceptor {
 
 impl Drop for Acceptor {
     fn drop(&mut self) {
-        self.accept.abort();
+        if let Some(accept) = &self.accept {
+            accept.abort();
+        }
     }
 }
 
