@@ -31,4 +31,6 @@ pub use message::{GatewayCall, GatewayMessage, GatewayReply, NodeCall, NodeMessa
 pub use metadata::{Metadata, Rejection, UpdateMetadata};
 pub use open::{Open, Unhandled};
 pub use session::PROTOCOL_VERSION;
-pub use tool::{CallTool, Decision, ToolCall, ToolCatalogue, ToolDef, ToolOutcome, ToolVerdict};
+#[allow(deprecated)]
+pub use tool::ToolCatalogue;
+pub use tool::{CallTool, Decision, ToolCall, ToolDef, ToolGroup, ToolOutcome, ToolVerdict};

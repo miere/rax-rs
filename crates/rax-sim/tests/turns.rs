@@ -11,8 +11,8 @@ use rax::attachment::Attachment;
 use rax::credential::CredentialHealth;
 use rax::event::StopReason;
 use rax::resource::ReadResource;
-use rax::session::{GatewayCapabilities, SessionDurability, ToolGate};
-use rax::tool::{DeniedBy, ToolCallStatus};
+use rax::session::{GatewayCapabilities, NewSession, SessionDurability, ToolGate};
+use rax::tool::{CallTool, DeniedBy, ToolCallStatus, ToolGroup, ToolOutcome};
 use rax::{
     Decision, Event, Metadata, NodeCall, NodeReply, PROTOCOL_VERSION, Rejection, UpdateMetadata,
 };
@@ -356,4 +356,65 @@ async fn the_simulator_takes_metadata_updates_and_can_reject_them() {
         Some(NodeEvent::Rejected(_))
     ));
     assert!(within(events.recv()).await.is_none());
+}
+
+/// The simulator lends groups per session and refuses a call for a group that session was not
+/// opened with, whatever the node sends.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_call_is_answered_only_for_a_group_its_session_was_opened_with() {
+    let sim = simulator(NodeOptions::default()).await;
+    let mut node = TestNode::start(node_config(&sim), tool_turn());
+    assert!(matches!(node.next().await, NodeEvent::Fresh));
+    let sim_node = sim.next_node().await.unwrap();
+    sim_node
+        .initialize(GatewayCapabilities::default())
+        .await
+        .unwrap();
+    let slack = ToolGroup {
+        namespace: "slack".into(),
+        tools: vec![],
+    };
+    let session = sim_node
+        .open_session(NewSession {
+            tool_groups: vec![slack],
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .session_id;
+    let call = |namespace: &str| {
+        let handle = node.handle.clone();
+        let call = NodeCall::CallTool(CallTool {
+            session_id: session.clone(),
+            namespace: Some(namespace.to_owned()),
+            name: "message".into(),
+            arguments: None,
+        });
+        tokio::spawn(async move { handle.call(call).await })
+    };
+    let outcome = || ToolOutcome {
+        content: "posted".into(),
+        is_error: false,
+    };
+
+    let lent = call("slack");
+    let request = sim_node.next_node_call().await.unwrap();
+    assert_eq!(request.method(), NodeMethod::CallTool);
+    request.answer_tool(outcome()).await.unwrap();
+    let answered = within(lent).await.unwrap().unwrap();
+    assert_eq!(answered, NodeReply::CallTool(outcome()));
+
+    let unlent = call("openknowledge_x7k2");
+    sim_node
+        .next_node_call()
+        .await
+        .unwrap()
+        .answer_tool(outcome())
+        .await
+        .unwrap();
+    let Err(CallError::Fault(fault)) = within(unlent).await.unwrap() else {
+        panic!("expected a fault")
+    };
+    assert_eq!(fault.kind, rax::ErrorKind::Forbidden);
+    node.handle.close().await;
 }

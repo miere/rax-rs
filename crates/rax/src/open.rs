@@ -90,6 +90,11 @@ pub enum Subject {
     MetadataKey {
         key: String,
     },
+    /// A tool group the node did not publish to its agent, such as one whose namespace clashes
+    /// with a tool server the node already has.
+    ToolGroup {
+        namespace: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
