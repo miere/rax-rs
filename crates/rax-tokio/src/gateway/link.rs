@@ -5,10 +5,11 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use futures_util::Stream;
-use rax::attachment::AttachmentReceipt;
+use rax::attachment::MAX_ATTACHMENT_BYTES;
 use rax::event::BackgroundEvent;
 use rax::id::{RequestId, SessionId, TransferId};
 use rax::interaction::DisplayAnswer;
+use rax::local_file::{LocalFileTransfer, ReadLocalFile};
 use rax::message::from_payload;
 use rax::open::{Subject, UnhandledReason};
 use rax::resource::{ReadResource, ResourceTransfer};
@@ -189,10 +190,30 @@ impl Stream for StreamEvents {
     }
 }
 
+/// The bytes a node sent in answer to `local_file.read`, checked against the size it declared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalFile {
+    /// The base name the node gave, never a path.
+    pub name: Option<String>,
+    pub mimetype: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
+/// A read whose reply arrived and whose bytes are still on their way.
+struct Reading {
+    id: RequestId,
+    transfer: LocalFileTransfer,
+}
+
 pub(crate) struct Shared {
     pub(crate) identity: NodeIdentity,
     pub(crate) core: Arc<Core>,
     calls: Calls<GatewayReply>,
+    /// Kept apart from `calls` because a read settles on its last chunk, not on its reply.
+    reads: Calls<LocalFile>,
+    /// What each open read will take, so a larger file is refused at its reply.
+    limits: Mutex<HashMap<RequestId, Option<u64>>>,
+    reading: Mutex<HashMap<TransferId, Reading>>,
     streams: Mutex<HashMap<RequestId, mpsc::Sender<Open<Event>>>>,
     events: Mutex<Option<mpsc::Sender<Delivered>>>,
     transfers: Mutex<Reassembly>,
@@ -216,6 +237,9 @@ impl Shared {
             identity,
             core: Core::new(link),
             calls: Calls::new("g"),
+            reads: Calls::new("r"),
+            limits: Mutex::new(HashMap::new()),
+            reading: Mutex::new(HashMap::new()),
             streams: Mutex::new(HashMap::new()),
             events: Mutex::new(Some(events)),
             transfers: Mutex::new(Reassembly::default()),
@@ -251,6 +275,12 @@ impl Shared {
         }
     }
 
+    fn fail_reads(&self, ended: Ended) {
+        lock(&self.limits).clear();
+        lock(&self.reading).clear();
+        self.reads.fail_all(ended);
+    }
+
     fn answer(&self, message: GatewayMessage) {
         let core = self.core.clone();
         tokio::spawn(async move {
@@ -281,6 +311,7 @@ impl Half for Shared {
 
     fn fail_all(&self, ended: Ended) {
         self.calls.fail_all(ended);
+        self.fail_reads(ended);
         lock(&self.streams).clear();
         *lock(&self.transfers) = Reassembly::default();
     }
@@ -300,6 +331,7 @@ impl Half for Shared {
             return;
         }
         self.calls.fail_all(ended);
+        self.fail_reads(ended);
         lock(&self.streams).clear();
         self.shutdown.cancel();
         let last = match terminal {
@@ -351,10 +383,23 @@ impl GatewayLink {
         self.send(&GatewayMessage::Answer { body }).await
     }
 
-    /// Tells the node what became of an attachment. Only for a node that declared
-    /// `attachment_receipts`; any other answers it with `unhandled`.
-    pub async fn receipt(&self, body: AttachmentReceipt) -> Result<(), SendError> {
-        self.send(&GatewayMessage::Receipt { body }).await
+    /// Redeems an identifier the node put in a `tool.call`. Returns once every byte has arrived,
+    /// or fails if the node refuses or the transfer does. Only for a node that declared
+    /// `local_files`; any other faults it with `unsupported`.
+    pub async fn read_local_file(&self, read: ReadLocalFile) -> Result<LocalFile, CallError> {
+        let shared = &self.shared;
+        let generation = shared.core.generation();
+        let (id, file) = shared.reads.register();
+        lock(&shared.limits).insert(id.clone(), read.max_bytes);
+        let forget = ForgetRead { shared, id: &id };
+        let request = GatewayMessage::Request {
+            id: id.clone(),
+            call: GatewayCall::ReadLocalFile(read).into(),
+        };
+        shared.core.send_in(generation, &request).await?;
+        let result = file.await.unwrap_or(Err(CallError::Closed));
+        drop(forget);
+        result
     }
 
     pub async fn reply(&self, id: RequestId, reply: NodeReply) -> Result<(), SendError> {
@@ -386,13 +431,7 @@ impl GatewayLink {
         size: u64,
         mimetype: Option<String>,
     ) -> Result<TransferId, TransferError> {
-        let refused = match read.max_bytes {
-            Some(max_bytes) if size > max_bytes => {
-                Err(TransferError::OverReadLimit { size, max_bytes })
-            }
-            _ => transfer::check_size(size),
-        };
-        if let Err(err) = refused {
+        if let Err(err) = transfer::check_read(size, read.max_bytes) {
             let refusal = Error::new(ErrorKind::TooLarge, err.to_string());
             self.fault(id, refusal).await?;
             return Err(err);
@@ -453,6 +492,19 @@ impl GatewayLink {
     }
 }
 
+/// A read abandoned by its caller must not leave its bytes to arrive as an attachment.
+struct ForgetRead<'a> {
+    shared: &'a Shared,
+    id: &'a RequestId,
+}
+
+impl Drop for ForgetRead<'_> {
+    fn drop(&mut self) {
+        self.shared.reads.forget(self.id);
+        lock(&self.shared.limits).remove(self.id);
+    }
+}
+
 pub(crate) struct Router {
     pub(crate) shared: Arc<Shared>,
 }
@@ -466,6 +518,73 @@ impl Router {
         tokio::select! {
             _ = events.send(body) => Flow::Continue,
             _ = self.shared.shutdown.cancelled() => Flow::Stop,
+        }
+    }
+
+    /// Holds a read open past its reply, until the bytes that reply announced have arrived.
+    fn expect_transfer(&self, id: RequestId, transfer: LocalFileTransfer) {
+        let shared = &self.shared;
+        match lock(&shared.limits).remove(&id) {
+            // Not one of `read_local_file`'s: a caller that made the call itself, or a read
+            // nobody waits on any more.
+            None => self.settle(
+                id.clone(),
+                Ok(GatewayReply::ReadLocalFile(transfer.clone())),
+            ),
+            Some(max_bytes) => {
+                let ceiling =
+                    max_bytes.map_or(MAX_ATTACHMENT_BYTES, |max| max.min(MAX_ATTACHMENT_BYTES));
+                if transfer.size > ceiling {
+                    let reason = format!(
+                        "the node declared {} bytes, over the {ceiling}-byte limit",
+                        transfer.size
+                    );
+                    shared.reads.settle(&id, Err(CallError::Transfer(reason)));
+                }
+            }
+        }
+        // Kept whoever is waiting, so bytes a read announced are never taken for an attachment.
+        lock(&shared.reading).insert(transfer.transfer_id.clone(), Reading { id, transfer });
+    }
+
+    /// Settles the read these bytes answer. `Err` hands back a transfer no read announced, which
+    /// is an attachment.
+    fn settle_read(&self, settled: Settled) -> Result<(), Settled> {
+        let transfer_id = match &settled {
+            Settled::Complete { transfer_id, .. } | Settled::Failed { transfer_id, .. } => {
+                transfer_id
+            }
+        };
+        let Some(Reading { id, transfer }) = lock(&self.shared.reading).remove(transfer_id) else {
+            return Err(settled);
+        };
+        let result = match settled {
+            Settled::Complete { bytes, .. } if bytes.len() as u64 == transfer.size => {
+                Ok(LocalFile {
+                    name: transfer.name,
+                    mimetype: transfer.mimetype,
+                    bytes,
+                })
+            }
+            Settled::Complete { bytes, .. } => Err(format!(
+                "the node declared {} bytes and sent {}",
+                transfer.size,
+                bytes.len()
+            )),
+            Settled::Failed { reason, .. } => Err(reason),
+        };
+        self.shared
+            .reads
+            .settle(&id, result.map_err(CallError::Transfer));
+        Ok(())
+    }
+
+    fn fault(&self, id: RequestId, error: Error) {
+        let read = lock(&self.shared.limits).remove(&id).is_some();
+        if read {
+            self.shared.reads.settle(&id, Err(CallError::Fault(error)));
+        } else {
+            self.settle(id, Err(CallError::Fault(error)));
         }
     }
 
@@ -519,12 +638,19 @@ impl Route for Router {
                 });
                 Flow::Continue
             }
+            NodeMessage::Reply {
+                id,
+                reply: GatewayReply::ReadLocalFile(transfer),
+            } => {
+                self.expect_transfer(id, transfer);
+                Flow::Continue
+            }
             NodeMessage::Reply { id, reply } => {
                 self.settle(id, Ok(reply));
                 Flow::Continue
             }
             NodeMessage::Fault { id, error } => {
-                self.settle(id, Err(CallError::Fault(error)));
+                self.fault(id, error);
                 Flow::Continue
             }
             NodeMessage::Event { stream, body } => self.stream_event(stream, body).await,
@@ -541,7 +667,8 @@ impl Route for Router {
             }
             NodeMessage::Chunk { body } => {
                 let settled = lock(&shared.transfers).accept(body);
-                match settled {
+                let attachment = settled.and_then(|settled| self.settle_read(settled).err());
+                match attachment {
                     None => Flow::Continue,
                     Some(Settled::Complete { transfer_id, bytes }) => {
                         shared

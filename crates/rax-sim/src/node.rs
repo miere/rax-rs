@@ -4,11 +4,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rax::ErrorKind;
-use rax::attachment::AttachmentReceipt;
 use rax::credential::CredentialRenewal;
 use rax::event::BackgroundEvent;
-use rax::id::{RequestId, SessionId, ToolCallId, TransferId};
+use rax::id::{LocalFileId, RequestId, SessionId, ToolCallId, TransferId};
 use rax::interaction::DisplayAnswer;
+use rax::local_file::ReadLocalFile;
 use rax::session::{
     GatewayCapabilities, Initialize, Initialized, NewSession, Prompt, SessionCreated, SessionRef,
 };
@@ -18,7 +18,8 @@ use rax::{
 };
 use rax_tokio::dial::DialConfig;
 use rax_tokio::gateway::{
-    DialledEvent, DialledEvents, GatewayLink, LinkEvent, LinkEvents, NodeIdentity, PendingReply,
+    DialledEvent, DialledEvents, GatewayLink, LinkEvent, LinkEvents, LocalFile, NodeIdentity,
+    PendingReply,
 };
 use rax_tokio::{Disconnect, SendError};
 use serde::{Deserialize, Serialize};
@@ -604,14 +605,28 @@ impl SimNode {
             .map_err(SimError::send("an answer"))
     }
 
-    /// Tells the node what became of an attachment, as a gateway that declared
-    /// `attachment_receipts` does.
-    pub async fn receipt(&self, receipt: AttachmentReceipt) -> Result<(), SimError> {
-        self.shared
-            .link
-            .receipt(receipt)
-            .await
-            .map_err(SimError::send("a receipt"))
+    /// Redeems a local file identifier, as a gateway tool does with one it was handed in a
+    /// `tool.call`.
+    pub async fn read_local_file(
+        &self,
+        id: impl Into<LocalFileId>,
+        max_bytes: Option<u64>,
+    ) -> Result<LocalFile, SimError> {
+        let call = "local_file.read";
+        let read = ReadLocalFile {
+            id: id.into(),
+            max_bytes,
+        };
+        let wait = self.shared.wait;
+        match tokio::time::timeout(wait, self.shared.link.read_local_file(read)).await {
+            Err(_) => Err(SimError::Timeout {
+                waiting_for: format!("the bytes of `{call}`"),
+                after: wait,
+                arrived: Vec::new(),
+            }),
+            Ok(Err(source)) => Err(SimError::Call { call, source }),
+            Ok(Ok(file)) => Ok(file),
+        }
     }
 
     pub async fn next_node_call(&self) -> Result<NodeCallRequest, SimError> {

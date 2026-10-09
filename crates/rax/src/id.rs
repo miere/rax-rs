@@ -47,4 +47,10 @@ wire_id!(
 
 wire_id!(TransferId);
 
+wire_id!(
+    /// Minted by the node for one file it agreed to hand over. Opaque: a gateway learns no path
+    /// from it and cannot derive another from it.
+    LocalFileId
+);
+
 wire_id!(ToolCallId);

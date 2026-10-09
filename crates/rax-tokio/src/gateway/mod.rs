@@ -19,8 +19,8 @@ use tokio::net::ToSocketAddrs;
 
 pub use crate::accept::{Authenticator, NodeIdentity};
 pub use link::{
-    DialledEvent, DialledEvents, GatewayLink, LinkEvent, LinkEvents, NewLink, PendingCall,
-    PendingReply, StreamEvents,
+    DialledEvent, DialledEvents, GatewayLink, LinkEvent, LinkEvents, LocalFile, NewLink,
+    PendingCall, PendingReply, StreamEvents,
 };
 
 use crate::accept::{AcceptConfig, Accepted, AcceptedLinks, Acceptor};

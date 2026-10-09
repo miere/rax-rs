@@ -1,19 +1,25 @@
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::future::Future;
+use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use rax::credential::CredentialRenewal;
 use rax::event::StopReason;
 use rax::id::{RequestId, SessionId};
+use rax::local_file::ReadLocalFile;
 use rax::session::{Initialized, NodeCapabilities, PromptAccepted, SessionCreated, ToolGate};
 use rax::tool::{ToolCallStatus, ToolCallUpdate, ToolKind};
-use rax::{ContentBlock, Event, GatewayCall, GatewayReply, ToolCall, ToolVerdict};
+use rax::{
+    ContentBlock, Error, ErrorKind, Event, GatewayCall, GatewayReply, ToolCall, ToolVerdict,
+};
 use rax_sim::{NodeOptions, SimConfig, Simulator};
 use rax_tokio::gateway::GatewayConfig;
-use rax_tokio::node::{NodeConfig, NodeEvent, NodeEvents, NodeHandle, NodeLink};
+use rax_tokio::node::{LocalFile, NodeConfig, NodeEvent, NodeEvents, NodeHandle, NodeLink};
+use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 use tokio::sync::{Mutex, mpsc};
 
 pub const TOKEN: &str = "mrtg_node_0123456789abcdef_c2VjcmV0LXNlY3JldC1zZWNyZXQtc2VjcmV0LXNlY3I";
@@ -117,6 +123,49 @@ impl Turn {
     }
 }
 
+pub const LOCAL_FILE: &str = "lf_report";
+pub const BROKEN_LOCAL_FILE: &str = "lf_broken";
+
+pub fn local_file_bytes() -> Vec<u8> {
+    (0..300u32 << 10).map(|i| (i % 251) as u8).collect()
+}
+
+struct BrokenDisk;
+
+impl AsyncRead for BrokenDisk {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        _: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Poll::Ready(Err(io::Error::other("disk went away")))
+    }
+}
+
+/// The node holds two identifiers: one file that reads whole and one whose disk fails.
+async fn serve_local_file(handle: &NodeHandle, id: RequestId, read: ReadLocalFile) {
+    let described = LocalFile {
+        name: Some("report.bin".into()),
+        mimetype: None,
+    };
+    match read.id.0.as_str() {
+        LOCAL_FILE => {
+            let bytes = local_file_bytes();
+            let _ = handle.serve_local_file(id, &read, &bytes, described).await;
+        }
+        BROKEN_LOCAL_FILE => {
+            let reader = (&b"a few bytes"[..]).chain(BrokenDisk);
+            let _ = handle
+                .serve_local_file_from(id, &read, reader, 64, described)
+                .await;
+        }
+        _ => {
+            let error = Error::new(ErrorKind::NotFound, "this node holds no such file");
+            let _ = handle.fault(id, error).await;
+        }
+    }
+}
+
 /// A minimal node: answers every gateway call and runs `script` for each prompt.
 pub struct TestNode {
     pub handle: NodeHandle,
@@ -207,6 +256,10 @@ async fn serve(
             GatewayCall::CloseSession(_) => GatewayReply::CloseSession,
             GatewayCall::RenewCredential => {
                 GatewayReply::RenewCredential(CredentialRenewal::NothingToRenew)
+            }
+            GatewayCall::ReadLocalFile(read) => {
+                serve_local_file(&handle, id, read).await;
+                continue;
             }
             GatewayCall::Close => GatewayReply::Close,
         };

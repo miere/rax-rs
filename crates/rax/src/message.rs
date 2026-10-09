@@ -4,12 +4,13 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use crate::attachment::{AttachmentReceipt, TransferChunk};
+use crate::attachment::TransferChunk;
 use crate::credential::{CredentialHealth, CredentialRenewal};
 use crate::error::Error;
 use crate::event::{BackgroundEvent, Event};
 use crate::id::{RequestId, SessionId};
 use crate::interaction::{DisplayAnswer, SignInRequest, SignInSettled};
+use crate::local_file::{LocalFileTransfer, ReadLocalFile};
 use crate::metadata::{Rejection, UpdateMetadata};
 use crate::open::{Open, Unhandled, tagged};
 use crate::resource::{ReadResource, ResourceTransfer};
@@ -45,9 +46,6 @@ pub enum GatewayMessage {
     /// Only in answer to `resource.read`, after its reply.
     #[serde(rename = "chunk")]
     Chunk { body: TransferChunk },
-    /// What became of an attachment, keyed by its transfer.
-    #[serde(rename = "receipt")]
-    Receipt { body: AttachmentReceipt },
     /// `stream` is absent when what went unhandled belonged to no turn.
     #[serde(rename = "unhandled")]
     Unhandled {
@@ -70,7 +68,6 @@ tagged!(
         "verdict",
         "answer",
         "chunk",
-        "receipt",
         "unhandled",
         "rejected"
     ]
@@ -108,6 +105,8 @@ pub enum NodeMessage {
         session_id: SessionId,
         body: Open<BackgroundEvent>,
     },
+    /// An attachment's bytes ahead of its event, or the answer to `local_file.read` after its
+    /// reply.
     #[serde(rename = "chunk")]
     Chunk { body: TransferChunk },
     #[serde(rename = "unhandled")]
@@ -151,6 +150,9 @@ pub enum GatewayCall {
     CloseSession(SessionRef),
     #[serde(rename = "credential.renew")]
     RenewCredential,
+    /// Redeems an identifier the node put in a `tool.call` in place of a path.
+    #[serde(rename = "local_file.read")]
+    ReadLocalFile(ReadLocalFile),
     #[serde(rename = "close")]
     Close,
 }
@@ -165,6 +167,7 @@ tagged!(
         "cancel",
         "session.close",
         "credential.renew",
+        "local_file.read",
         "close",
     ]
 );
@@ -185,6 +188,8 @@ pub enum GatewayReply {
     CloseSession,
     #[serde(rename = "credential.renew")]
     RenewCredential(CredentialRenewal),
+    #[serde(rename = "local_file.read")]
+    ReadLocalFile(LocalFileTransfer),
     #[serde(rename = "close")]
     Close,
 }
