@@ -15,7 +15,7 @@ pub enum TransferError {
         "rax-tokio: an attachment of {size} bytes exceeds the {MAX_ATTACHMENT_BYTES}-byte ceiling"
     )]
     TooLarge { size: u64 },
-    #[error("rax-tokio: a resource of {size} bytes exceeds the reader's {max_bytes}-byte limit")]
+    #[error("rax-tokio: a transfer of {size} bytes exceeds the reader's {max_bytes}-byte limit")]
     OverReadLimit { size: u64, max_bytes: u64 },
     /// The receiver was told with a `failed` chunk, so it drops what it holds.
     #[error("rax-tokio: read attachment: {0}")]
@@ -28,6 +28,16 @@ pub enum TransferError {
 
 pub(crate) fn new_transfer_id() -> TransferId {
     TransferId(format!("t{:016x}", rand::random::<u64>()))
+}
+
+/// Refuses past the reader's own limit first, since that is the answer it can act on.
+pub(crate) fn check_read(size: u64, max_bytes: Option<u64>) -> Result<(), TransferError> {
+    match max_bytes {
+        Some(max_bytes) if size > max_bytes => {
+            Err(TransferError::OverReadLimit { size, max_bytes })
+        }
+        _ => check_size(size),
+    }
 }
 
 pub(crate) fn check_size(size: u64) -> Result<(), TransferError> {

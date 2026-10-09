@@ -14,6 +14,7 @@ pub mod frame;
 pub mod id;
 pub mod interaction;
 pub mod link;
+pub mod local_file;
 pub mod message;
 pub mod metadata;
 pub mod open;

@@ -8,10 +8,11 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use futures_util::Stream;
-use rax::attachment::{AttachmentReceipt, MAX_ATTACHMENT_BYTES};
+use rax::attachment::MAX_ATTACHMENT_BYTES;
 use rax::event::BackgroundEvent;
 use rax::id::{RequestId, SessionId, TransferId};
 use rax::interaction::DisplayAnswer;
+use rax::local_file::{LocalFileTransfer, ReadLocalFile};
 use rax::message::from_payload;
 use rax::open::{Subject, UnhandledReason};
 use rax::resource::{ReadResource, ResourceTransfer};
@@ -62,7 +63,6 @@ pub enum NodeEvent {
     },
     Verdict(ToolVerdict),
     Answer(DisplayAnswer),
-    Receipt(AttachmentReceipt),
     Unhandled {
         stream: Option<RequestId>,
         body: Unhandled,
@@ -125,6 +125,14 @@ pub struct Resource {
     pub transfer_id: TransferId,
     pub mimetype: Option<String>,
     pub bytes: Vec<u8>,
+}
+
+/// What a node tells a gateway about a file it serves, beside the bytes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalFile {
+    /// The base name, never the path.
+    pub name: Option<String>,
+    pub mimetype: Option<String>,
 }
 
 enum Answered {
@@ -340,6 +348,51 @@ impl NodeHandle {
         .await
     }
 
+    /// Answers `local_file.read`, refusing with `too_large` past the read's `max_bytes` or the
+    /// transfer ceiling. Whether the identifier names a file at all is the caller's to decide.
+    pub async fn serve_local_file(
+        &self,
+        id: RequestId,
+        read: &ReadLocalFile,
+        bytes: &[u8],
+        described: LocalFile,
+    ) -> Result<TransferId, TransferError> {
+        self.serve_local_file_from(id, read, bytes, bytes.len() as u64, described)
+            .await
+    }
+
+    pub async fn serve_local_file_from<R: AsyncRead + Unpin>(
+        &self,
+        id: RequestId,
+        read: &ReadLocalFile,
+        reader: R,
+        size: u64,
+        described: LocalFile,
+    ) -> Result<TransferId, TransferError> {
+        if let Err(err) = transfer::check_read(size, read.max_bytes) {
+            let refusal = Error::new(ErrorKind::TooLarge, err.to_string());
+            self.fault(id, refusal).await?;
+            return Err(err);
+        }
+        let core = &self.shared.core;
+        let generation = core.generation();
+        let transfer_id = transfer::new_transfer_id();
+        let reply = NodeMessage::Reply {
+            id,
+            reply: GatewayReply::ReadLocalFile(LocalFileTransfer {
+                transfer_id: transfer_id.clone(),
+                size,
+                name: described.name,
+                mimetype: described.mimetype,
+            }),
+        };
+        core.send_in(generation, &reply).await?;
+        transfer::send(core, generation, transfer_id, reader, size, |body| {
+            NodeMessage::Chunk { body }
+        })
+        .await
+    }
+
     /// Tells a call that failed with the link apart from one the gateway refused.
     pub fn is_closed(&self) -> bool {
         self.shared.core.is_ended()
@@ -517,7 +570,6 @@ impl Route for Router {
             }
             GatewayMessage::Verdict { body } => self.emit(NodeEvent::Verdict(body)).await,
             GatewayMessage::Answer { body } => self.emit(NodeEvent::Answer(body)).await,
-            GatewayMessage::Receipt { body } => self.emit(NodeEvent::Receipt(body)).await,
             GatewayMessage::Unhandled { stream, body } => {
                 self.emit(NodeEvent::Unhandled { stream, body }).await
             }

@@ -1,9 +1,12 @@
-use rax::attachment::{AttachmentReceipt, ChunkPart, ReceiptOutcome, TransferChunk};
+use rax::attachment::{ChunkPart, TransferChunk};
 use rax::credential::CredentialRenewal;
 use rax::error::{ProviderFailure, RpcFailure};
 use rax::event::StopReason;
 use rax::frame::{Frame, FrameError, ResumeOutcome};
 use rax::interaction::{DisplayAnswer, DisplayOutcome, SignInState};
+use rax::local_file::{
+    LOCAL_FILE_FORMAT, LocalFileTransfer, ReadLocalFile, replace_local_files, takes_local_files,
+};
 use rax::message::{from_payload, to_payload};
 use rax::open::{Subject, Tagged, UnhandledReason};
 use rax::resource::{ReadResource, ResourceTransfer};
@@ -46,13 +49,12 @@ fn initialize_negotiates_version_and_capabilities() {
                     resource_schemes: vec!["chat".into()],
                     readable_schemes: vec!["gateway".into()],
                     tools: None,
-                    attachment_receipts: true,
                 },
             }),
         ),
         json!({"k": "req", "id": "1", "method": "initialize", "body": {"protocol_version": 1,
                "capabilities": {"question": true, "plan": false, "sign_in": true, "resource_schemes": ["chat"],
-               "readable_schemes": ["gateway"], "attachment_receipts": true}}}),
+               "readable_schemes": ["gateway"]}}}),
     );
     assert_wire(
         &NodeMessage::Reply {
@@ -391,42 +393,94 @@ fn answers_travel_keyed_by_the_prompt() {
 }
 
 #[test]
-fn receipts_travel_keyed_by_the_transfer() {
+fn a_local_file_read_is_answered_before_its_bytes() {
     assert_wire(
-        &GatewayMessage::Receipt {
-            body: AttachmentReceipt {
-                transfer_id: "t1".into(),
-                outcome: ReceiptOutcome::Delivered,
-                reason: None,
-            },
-        },
-        json!({"k": "receipt", "body": {"transfer_id": "t1", "outcome": "delivered"}}),
+        &request(
+            "g8",
+            GatewayCall::ReadLocalFile(ReadLocalFile {
+                id: "lf_9c2e".into(),
+                max_bytes: Some(1024),
+            }),
+        ),
+        json!({"k": "req", "id": "g8", "method": "local_file.read",
+               "body": {"id": "lf_9c2e", "max_bytes": 1024}}),
     );
     assert_wire(
-        &GatewayMessage::Receipt {
-            body: AttachmentReceipt {
-                transfer_id: "t2".into(),
-                outcome: ReceiptOutcome::Failed,
-                reason: Some("Slack refused the upload".into()),
-            },
+        &NodeMessage::Reply {
+            id: "g8".into(),
+            reply: GatewayReply::ReadLocalFile(LocalFileTransfer {
+                transfer_id: "y".into(),
+                size: 2,
+                name: Some("report.pdf".into()),
+                mimetype: None,
+            }),
         },
-        json!({"k": "receipt", "body": {"transfer_id": "t2", "outcome": "failed",
-               "reason": "Slack refused the upload"}}),
+        json!({"k": "res", "id": "g8", "method": "local_file.read",
+               "body": {"transfer_id": "y", "size": 2, "name": "report.pdf"}}),
     );
-    let newer: AttachmentReceipt =
-        serde_json::from_value(json!({"transfer_id": "t3", "outcome": "queued"})).unwrap();
-    assert_eq!(newer.outcome, ReceiptOutcome::Unknown);
 }
 
 #[test]
-fn attachment_receipts_are_off_unless_declared() {
-    let gateway: GatewayCapabilities = serde_json::from_value(json!({})).unwrap();
-    assert!(!gateway.attachment_receipts);
+fn local_files_are_off_unless_declared() {
     let node: NodeCapabilities = serde_json::from_value(json!({})).unwrap();
-    assert!(!node.attachment_receipts);
-    let declared: NodeCapabilities =
-        serde_json::from_value(json!({"attachment_receipts": true})).unwrap();
-    assert!(declared.attachment_receipts);
+    assert!(!node.local_files);
+    let declared: NodeCapabilities = serde_json::from_value(json!({"local_files": true})).unwrap();
+    assert!(declared.local_files);
+}
+
+fn attach_schema() -> Value {
+    json!({"type": "object", "properties": {
+        "file": {"type": "string", "format": LOCAL_FILE_FORMAT},
+        "comment": {"type": "string"},
+        "more": {"type": "array", "items": {"type": "object", "properties": {
+            "path": {"type": "string", "format": "local-file"}}}}}})
+}
+
+#[test]
+fn every_marked_argument_is_replaced_and_nothing_else() {
+    assert!(takes_local_files(&attach_schema()));
+    assert!(!takes_local_files(
+        &json!({"type": "object", "properties": {"path": {"type": "string"}}})
+    ));
+
+    let mut arguments = json!({"file": "/work/a.pdf", "comment": "/work/a.pdf", "unlisted": "/x",
+                               "more": [{"path": "b.png"}, {"path": 7}]});
+    let mut seen = Vec::new();
+    let replaced = replace_local_files(&attach_schema(), &mut arguments, &mut |path| {
+        seen.push(path.to_owned());
+        Ok::<_, String>(format!("lf_{}", seen.len()).into())
+    });
+    assert_eq!(replaced, Ok(()));
+    assert_eq!(seen, ["/work/a.pdf", "b.png"]);
+    assert_eq!(
+        arguments,
+        json!({"file": "lf_1", "comment": "/work/a.pdf", "unlisted": "/x",
+               "more": [{"path": "lf_2"}, {"path": 7}]})
+    );
+}
+
+#[test]
+fn a_refused_path_stops_the_call_from_being_rewritten_further() {
+    let mut arguments = json!({"file": "/etc/passwd", "more": [{"path": "b.png"}]});
+    let mut asked = 0;
+    let refused = replace_local_files(&attach_schema(), &mut arguments, &mut |path| {
+        asked += 1;
+        Err(format!("{path} is outside the working directory"))
+    });
+    assert_eq!(
+        refused,
+        Err("/etc/passwd is outside the working directory".to_owned())
+    );
+    assert_eq!(asked, 1);
+}
+
+#[test]
+fn a_receipt_from_an_older_gateway_decodes_as_unknown() {
+    let receipt: Open<GatewayMessage> = serde_json::from_value(
+        json!({"k": "receipt", "body": {"transfer_id": "t1", "outcome": "delivered"}}),
+    )
+    .unwrap();
+    assert!(matches!(receipt, Open::Unknown { name, .. } if name == "receipt"));
 }
 
 #[test]
@@ -572,6 +626,10 @@ fn tag_name_lists_match_the_enums() {
                     session_id: "s".into()
                 }),
                 GatewayCall::RenewCredential,
+                GatewayCall::ReadLocalFile(ReadLocalFile {
+                    id: "lf".into(),
+                    max_bytes: None
+                }),
                 GatewayCall::Close,
             ],
             "method"

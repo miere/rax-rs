@@ -14,9 +14,10 @@ use rax::resource::ReadResource;
 use rax::session::{GatewayCapabilities, NewSession, SessionDurability, ToolGate};
 use rax::tool::{CallTool, DeniedBy, ToolCallStatus, ToolGroup, ToolOutcome};
 use rax::{
-    Decision, Event, Metadata, NodeCall, NodeReply, PROTOCOL_VERSION, Rejection, UpdateMetadata,
+    Decision, ErrorKind, Event, Metadata, NodeCall, NodeReply, PROTOCOL_VERSION, Rejection,
+    UpdateMetadata,
 };
-use rax_sim::{Entry, Match, NodeMethod, NodeOptions, Overlap, Transfer, VerdictPolicy};
+use rax_sim::{Entry, Match, NodeMethod, NodeOptions, Overlap, SimError, Transfer, VerdictPolicy};
 use rax_tokio::CallError;
 use rax_tokio::node::{NodeEvent, NodeLink};
 use support::*;
@@ -140,6 +141,40 @@ impl AsyncRead for Broken {
     ) -> Poll<io::Result<()>> {
         Poll::Ready(Err(io::Error::other("disk went away")))
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_local_file_is_read_whole_and_a_broken_one_fails_the_read() {
+    let sim = simulator(NodeOptions::default()).await;
+    let mut node = TestNode::start(
+        node_config(&sim),
+        script(|turn| async move { turn.finish().await }),
+    );
+    assert!(matches!(node.next().await, NodeEvent::Fresh));
+    let sim_node = sim.next_node().await.unwrap();
+
+    let file = sim_node.read_local_file(LOCAL_FILE, None).await.unwrap();
+    assert_eq!(file.name.as_deref(), Some("report.bin"));
+    assert!(
+        file.bytes == local_file_bytes(),
+        "{} bytes",
+        file.bytes.len()
+    );
+
+    let broken = sim_node.read_local_file(BROKEN_LOCAL_FILE, None).await;
+    let Err(SimError::Call {
+        source: CallError::Transfer(reason),
+        ..
+    }) = broken
+    else {
+        panic!("expected a failed transfer, got {broken:?}")
+    };
+    assert!(reason.contains("disk went away"), "{reason}");
+
+    let guessed = sim_node.read_local_file("lf_guessed", None).await;
+    let fault = guessed.as_ref().unwrap_err().fault().unwrap();
+    assert_eq!(fault.kind, ErrorKind::NotFound);
+    node.handle.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
