@@ -14,8 +14,8 @@ use rax::resource::ReadResource;
 use rax::session::{GatewayCapabilities, NewSession, SessionDurability, ToolGate};
 use rax::tool::{CallTool, DeniedBy, ToolCallStatus, ToolGroup, ToolOutcome};
 use rax::{
-    Decision, ErrorKind, Event, Metadata, NodeCall, NodeReply, PROTOCOL_VERSION, Rejection,
-    UpdateMetadata,
+    Activity, Decision, ErrorKind, Event, Metadata, NodeCall, NodeReply, PROTOCOL_VERSION,
+    Rejection, UpdateMetadata,
 };
 use rax_sim::{Entry, Match, NodeMethod, NodeOptions, Overlap, SimError, Transfer, VerdictPolicy};
 use rax_tokio::CallError;
@@ -452,4 +452,30 @@ async fn a_tool_call_is_answered_only_for_a_group_its_session_was_opened_with() 
     };
     assert_eq!(fault.kind, rax::ErrorKind::Forbidden);
     node.handle.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_simulator_keeps_every_activity_report() {
+    let sim = simulator(NodeOptions {
+        auto_reply: BTreeSet::from([NodeMethod::Activity]),
+        ..Default::default()
+    })
+    .await;
+    let (node, mut events) = NodeLink::start(node_config(&sim)).unwrap();
+    assert!(matches!(
+        within(events.recv()).await,
+        Some(NodeEvent::Fresh)
+    ));
+    let sim_node = sim.next_node().await.unwrap();
+    assert!(sim_node.activity_log().is_empty());
+
+    let busy = Activity {
+        turns: 1,
+        background_tasks: 0,
+    };
+    for activity in [busy, Activity::default()] {
+        let call = within(node.call(NodeCall::Activity(activity))).await;
+        assert!(matches!(call, Ok(NodeReply::Activity)));
+    }
+    assert_eq!(sim_node.activity_log(), [busy, Activity::default()]);
 }

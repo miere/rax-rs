@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rax::ErrorKind;
+use rax::activity::Activity;
 use rax::credential::CredentialRenewal;
 use rax::event::BackgroundEvent;
 use rax::id::{LocalFileId, RequestId, SessionId, ToolCallId, TransferId};
@@ -40,6 +41,7 @@ pub enum NodeMethod {
     ReadResource,
     CallTool,
     UpdateMetadata,
+    Activity,
 }
 
 impl NodeMethod {
@@ -51,6 +53,7 @@ impl NodeMethod {
             NodeCall::ReadResource(_) => Self::ReadResource,
             NodeCall::CallTool(_) => Self::CallTool,
             NodeCall::UpdateMetadata(_) => Self::UpdateMetadata,
+            NodeCall::Activity(_) => Self::Activity,
         }
     }
 
@@ -60,6 +63,7 @@ impl NodeMethod {
             Self::SignInSettled => NodeReply::SignInSettled,
             Self::CredentialHealth => NodeReply::CredentialHealth,
             Self::UpdateMetadata => NodeReply::UpdateMetadata,
+            Self::Activity => NodeReply::Activity,
             Self::ReadResource => {
                 let gone = rax::Error::new(ErrorKind::NotFound, "the simulator serves no bytes");
                 return link.fault(id, gone).await;
@@ -296,6 +300,7 @@ pub(crate) struct NodeShared {
     started: Instant,
     options: Mutex<NodeOptions>,
     log: Arc<Mutex<CallLog>>,
+    activity: Mutex<Vec<Activity>>,
     groups: Arc<Mutex<SessionGroups>>,
     calls: Inbox<NodeCallRequest>,
     background: Inbox<(SessionId, Open<BackgroundEvent>)>,
@@ -312,6 +317,7 @@ impl NodeShared {
             started,
             options: Mutex::new(options),
             log: Arc::default(),
+            activity: Mutex::default(),
             groups: Arc::default(),
             calls: Inbox::new(),
             background: Inbox::new(),
@@ -357,6 +363,9 @@ impl NodeShared {
         let method = NodeMethod::of(&call);
         let arrived = truncate(self.started.elapsed());
         let index = lock(&self.log).arrived(id.clone(), method, arrived);
+        if let NodeCall::Activity(activity) = &call {
+            lock(&self.activity).push(*activity);
+        }
         if lock(&self.options).auto_reply.contains(&method) {
             lock(&self.log).answered(index, truncate(self.started.elapsed()));
             if let Err(err) = method.answer(&self.link, id).await {
@@ -672,6 +681,12 @@ impl SimNode {
 
     pub fn call_log(&self) -> Vec<CallRecord> {
         lock(&self.shared.log).records.clone()
+    }
+
+    /// Every activity report the node has sent, oldest first, answered or not. The last is what
+    /// the node is doing now.
+    pub fn activity_log(&self) -> Vec<Activity> {
+        lock(&self.shared.activity).clone()
     }
 
     pub fn call_overlaps(&self, methods: &[NodeMethod]) -> Vec<Overlap> {
