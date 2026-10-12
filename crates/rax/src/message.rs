@@ -4,6 +4,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
+use crate::activity::Activity;
 use crate::attachment::TransferChunk;
 use crate::credential::{CredentialHealth, CredentialRenewal};
 use crate::error::Error;
@@ -214,6 +215,9 @@ pub enum NodeCall {
     /// Answered so updates go one at a time, and a later map never overtakes an earlier one.
     #[serde(rename = "metadata.update")]
     UpdateMetadata(UpdateMetadata),
+    /// Answered so reports go one at a time, and an older count never overtakes a newer one.
+    #[serde(rename = "activity")]
+    Activity(Activity),
 }
 
 tagged!(
@@ -225,7 +229,8 @@ tagged!(
         "credential.health",
         "resource.read",
         "tool.call",
-        "metadata.update"
+        "metadata.update",
+        "activity"
     ]
 );
 
@@ -244,6 +249,8 @@ pub enum NodeReply {
     CallTool(ToolOutcome),
     #[serde(rename = "metadata.update")]
     UpdateMetadata,
+    #[serde(rename = "activity")]
+    Activity,
 }
 
 #[derive(Debug, thiserror::Error)]

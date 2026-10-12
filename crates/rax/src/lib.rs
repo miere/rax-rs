@@ -5,6 +5,7 @@
 //! - [`frame`] and [`link`]: sequenced, acknowledged, resumable delivery of opaque payloads.
 //! - [`message`]: the calls, replies and turn events those payloads carry.
 
+pub mod activity;
 pub mod attachment;
 pub mod content;
 pub mod credential;
@@ -23,6 +24,7 @@ pub mod session;
 pub mod tool;
 pub mod transport;
 
+pub use activity::Activity;
 pub use content::ContentBlock;
 pub use error::{Error, ErrorKind};
 pub use event::{BackgroundEvent, Event};

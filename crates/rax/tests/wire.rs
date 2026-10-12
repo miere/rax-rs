@@ -1,3 +1,4 @@
+use rax::activity::Activity;
 use rax::attachment::{ChunkPart, TransferChunk};
 use rax::credential::CredentialRenewal;
 use rax::error::{ProviderFailure, RpcFailure};
@@ -636,7 +637,7 @@ fn tag_name_lists_match_the_enums() {
         ),
         GatewayCall::NAMES
     );
-    assert_eq!(NodeCall::NAMES.last(), Some(&"metadata.update"));
+    assert_eq!(NodeCall::NAMES.last(), Some(&"activity"));
     assert!(GatewayMessage::NAMES.contains(&"rejected"));
     let event_names = Event::NAMES;
     for name in BackgroundEvent::NAMES {
@@ -1042,4 +1043,42 @@ fn a_namespace_fits_a_tool_name_and_nothing_else() {
     assert!(!ToolGroup::is_valid_namespace("Slack"));
     assert!(!ToolGroup::is_valid_namespace("open-knowledge"));
     assert!(!ToolGroup::is_valid_namespace("slack.tools"));
+}
+
+#[test]
+fn a_node_reports_its_activity() {
+    assert_wire(
+        &NodeMessage::Request {
+            id: "n3".into(),
+            call: NodeCall::Activity(Activity {
+                turns: 1,
+                background_tasks: 2,
+            })
+            .into(),
+        },
+        json!({"k": "req", "id": "n3", "method": "activity",
+               "body": {"turns": 1, "background_tasks": 2}}),
+    );
+    assert_wire(
+        &GatewayMessage::Reply {
+            id: "n3".into(),
+            reply: NodeReply::Activity,
+        },
+        json!({"k": "res", "id": "n3", "method": "activity"}),
+    );
+}
+
+#[test]
+fn a_node_with_nothing_open_is_idle() {
+    assert!(Activity::default().is_idle());
+    let turn = Activity {
+        turns: 1,
+        background_tasks: 0,
+    };
+    assert!(!turn.is_idle());
+    let task = Activity {
+        turns: 0,
+        background_tasks: 1,
+    };
+    assert!(!task.is_idle());
 }
