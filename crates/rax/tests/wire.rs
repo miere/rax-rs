@@ -794,12 +794,41 @@ fn a_tool_that_ran_and_failed_is_still_a_reply() {
             reply: NodeReply::CallTool(ToolOutcome {
                 content: "I am not in that channel, so I cannot read it.".into(),
                 is_error: true,
+                resources: Vec::new(),
             }),
         },
         json!({"k": "res", "id": "n4", "method": "tool.call",
                "body": {"content": "I am not in that channel, so I cannot read it.",
                "is_error": true}}),
     );
+}
+
+/// A tool that fetched something too big to answer with links it, for the node to read after.
+#[test]
+fn a_tool_can_answer_with_resources() {
+    assert_wire(
+        &GatewayMessage::Reply {
+            id: "n5".into(),
+            reply: NodeReply::CallTool(ToolOutcome {
+                content: "Read Q3 report.pdf.".into(),
+                is_error: false,
+                resources: vec![ContentBlock::link("gateway://files/F1", "Q3 report.pdf").into()],
+            }),
+        },
+        json!({"k": "res", "id": "n5", "method": "tool.call",
+               "body": {"content": "Read Q3 report.pdf.", "is_error": false,
+               "resources": [{"type": "resource_link", "uri": "gateway://files/F1",
+                              "name": "Q3 report.pdf"}]}}),
+    );
+}
+
+#[test]
+fn tool_resources_are_off_unless_declared() {
+    let node: NodeCapabilities = serde_json::from_value(json!({})).unwrap();
+    assert!(!node.tool_resources);
+    let declared: NodeCapabilities =
+        serde_json::from_value(json!({"tool_resources": true})).unwrap();
+    assert!(declared.tool_resources);
 }
 
 /// `forbidden` is the same answer a resource gets, and for the same reason: a node must not be able

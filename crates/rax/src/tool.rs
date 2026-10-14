@@ -109,6 +109,10 @@ pub struct ToolOutcome {
     pub content: String,
     #[serde(default)]
     pub is_error: bool,
+    /// `resource_link`s too big to answer with, which the node fetches with `resource.read`
+    /// before its agent hears the answer. Sent only to a node that declared `tool_resources`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<Open<ContentBlock>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

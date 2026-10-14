@@ -73,6 +73,10 @@ pub struct NodeCapabilities {
     /// `local_file.read`, so a gateway may lend it tools carrying the marker.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub local_files: bool,
+    /// The node fetches the `resources` a gateway tool answers with and hands them to its agent,
+    /// so a gateway may answer it with links rather than bytes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tool_resources: bool,
 }
 
 /// Whether a session outlives the node process is the node's to declare, because only the node
