@@ -430,6 +430,7 @@ async fn a_tool_call_is_answered_only_for_a_group_its_session_was_opened_with() 
     let outcome = || ToolOutcome {
         content: "posted".into(),
         is_error: false,
+        resources: Vec::new(),
     };
 
     let lent = call("slack");

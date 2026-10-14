@@ -108,6 +108,7 @@ async fn a_dialling_sim_drives_a_turn_on_an_accepting_node() {
         .answer_tool(ToolOutcome {
             content: "never".into(),
             is_error: false,
+            resources: Vec::new(),
         })
         .await
         .unwrap();
