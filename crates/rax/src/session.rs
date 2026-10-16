@@ -48,6 +48,10 @@ pub struct GatewayCapabilities {
     /// that does ignores it and uses each session's groups instead. Absent means none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<ToolGroup>,
+    /// The gateway can confine a node to its owner, so a node whose credential requires that may
+    /// be served by it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub owner_only: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +81,11 @@ pub struct NodeCapabilities {
     /// so a gateway may answer it with links rather than bytes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tool_resources: bool,
+    /// A requirement, not a hint: the node's credential may serve its owner alone, so the gateway
+    /// admits nobody else whatever the metadata says. A node faults `initialize` with
+    /// `unsupported` rather than declare it to a gateway that did not offer `owner_only`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub owner_only: bool,
 }
 
 /// Whether a session outlives the node process is the node's to declare, because only the node

@@ -50,6 +50,7 @@ fn initialize_negotiates_version_and_capabilities() {
                     resource_schemes: vec!["chat".into()],
                     readable_schemes: vec!["gateway".into()],
                     tools: None,
+                    owner_only: false,
                 },
             }),
         ),
@@ -829,6 +830,32 @@ fn tool_resources_are_off_unless_declared() {
     let declared: NodeCapabilities =
         serde_json::from_value(json!({"tool_resources": true})).unwrap();
     assert!(declared.tool_resources);
+}
+
+/// Left off the wire when false on either side, so an older peer sees exactly what it did, and
+/// absent decodes as false, so a gateway that says nothing never claims it can confine a node.
+#[test]
+fn owner_only_is_off_unless_declared() {
+    let gateway: GatewayCapabilities = serde_json::from_value(json!({})).unwrap();
+    assert!(!gateway.owner_only);
+    let node: NodeCapabilities = serde_json::from_value(json!({})).unwrap();
+    assert!(!node.owner_only);
+    assert!(
+        serde_json::to_value(&node)
+            .unwrap()
+            .get("owner_only")
+            .is_none()
+    );
+    let offered = GatewayCapabilities {
+        owner_only: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&offered).unwrap()["owner_only"],
+        json!(true)
+    );
+    let required: NodeCapabilities = serde_json::from_value(json!({"owner_only": true})).unwrap();
+    assert!(required.owner_only);
 }
 
 /// `forbidden` is the same answer a resource gets, and for the same reason: a node must not be able
