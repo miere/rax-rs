@@ -1,6 +1,6 @@
 [package]
 name = "rax-gateway"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 description = "An opinionated RAX gateway: nodes, the clients that use them, and who may do what"
 license = "MIT"

@@ -7,6 +7,12 @@ minor bump is a breaking change. Depend on a tag:
 rax = { git = "https://github.com/miere/rax-rs", tag = "0.12.0" }
 ```
 
+## 0.13.0
+
+- New crate, `rax-gateway`: Murtaugh's gateway core, with what was Murtaugh's own behind traits.
+  It serves nodes and the clients that run sessions on them, and keeps who may do what in a store.
+- A `rax-gateway` binary, behind the `bin` feature, that serves RAX alone from a SQLite database.
+
 ## 0.12.0
 
 - A link closed while its router is busy flushes what was queued, so a node the gateway rejects

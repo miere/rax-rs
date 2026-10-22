@@ -877,7 +877,7 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "rax"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "base64",
  "serde",
@@ -889,7 +889,7 @@ dependencies = [
 
 [[package]]
 name = "rax-gateway"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -917,7 +917,7 @@ dependencies = [
 
 [[package]]
 name = "rax-sim"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "rax",
  "rax-tokio",
@@ -931,7 +931,7 @@ dependencies = [
 
 [[package]]
 name = "rax-tokio"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "futures-util",
  "rand",
