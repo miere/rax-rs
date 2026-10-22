@@ -10,6 +10,15 @@ repository = "https://github.com/miere/rax-rs"
 [lib]
 name = "rax_gateway"
 
+[[bin]]
+name = "rax-gateway"
+path = "src/main.rs"
+required-features = ["bin"]
+
+[[test]]
+name = "bin"
+required-features = ["bin"]
+
 [features]
 default = ["sqlite"]
 sqlite = ["dep:rusqlite"]
