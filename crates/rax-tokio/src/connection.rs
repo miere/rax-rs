@@ -386,10 +386,12 @@ where
     let (sink, mut stream) = socket.split();
     let mut writer = tokio::spawn(write_loop(sink, queue, core.clone(), timing));
     let idle = timing.keepalive.saturating_mul(3);
+    let mut written = false;
     let reason = loop {
         let message = tokio::select! {
             biased;
             ended = &mut writer => {
+                written = true;
                 break ended.unwrap_or_else(|err| Disconnect::Io(err.to_string()));
             }
             message = timeout(idle, stream.next()) => message,
@@ -424,6 +426,11 @@ where
         }
     };
     core.detach(queue_id);
+    // A core ended here has told the writer to close, so let it flush what was queued before,
+    // such as a rejection.
+    if !written && core.is_ended() {
+        let _ = timeout(timing.write_timeout, &mut writer).await;
+    }
     writer.abort();
     reason
 }
@@ -534,5 +541,63 @@ impl Owner {
                 half.finish(Terminal::Closed);
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use rax::LinkConfig;
+    use serde_json::json;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+
+    use super::*;
+
+    /// Queues one last message and ends the core from inside the read loop, as a rejection does.
+    struct EndsOnFirst(Arc<Core>);
+
+    impl Route for EndsOnFirst {
+        async fn route(&mut self, _payload: Box<RawValue>) -> Flow {
+            self.0.send(&json!({ "type": "last" })).await.unwrap();
+            self.0.end(Ended::Closed);
+            Flow::Stop
+        }
+    }
+
+    #[tokio::test]
+    async fn a_core_ended_mid_read_still_sends_what_it_queued() {
+        let (here, there) = tokio::io::duplex(64 * 1024);
+        let here = WebSocketStream::from_raw_socket(here, Role::Server, None).await;
+        let mut there = WebSocketStream::from_raw_socket(there, Role::Client, None).await;
+        let core = Core::new(Link::new(LinkConfig::default()));
+        let (claim, _slot) = core.claim().await;
+        let Ok(queue) = core.attach::<()>(claim, |_| Ok(Vec::new())) else {
+            panic!("attach failed")
+        };
+        let mut peer = Link::new(LinkConfig::default());
+        let first = peer
+            .send(to_payload(&json!({ "type": "first" })).unwrap())
+            .unwrap();
+        there
+            .send(Message::Binary(first.encode().unwrap().into()))
+            .await
+            .unwrap();
+
+        let timing = Timing {
+            keepalive: Duration::from_secs(30),
+            write_timeout: Duration::from_secs(5),
+        };
+        let mut router = EndsOnFirst(core.clone());
+        let reason = drive(core, here, queue, timing, &mut router).await;
+
+        assert_eq!(reason, Disconnect::Closed);
+        let Some(Ok(Message::Binary(bytes))) = there.next().await else {
+            panic!("the message queued before the close never went out")
+        };
+        let Frame::Message { payload, .. } = Frame::decode(&bytes).unwrap() else {
+            panic!("expected a message frame")
+        };
+        assert_eq!(payload.get(), r#"{"type":"last"}"#);
+        assert!(matches!(there.next().await, Some(Ok(Message::Close(_)))));
     }
 }
