@@ -4,8 +4,12 @@ Every crate in this workspace shares one version, and one tag covers them all. W
 minor bump is a breaking change. Depend on a tag:
 
 ```toml
-rax = { git = "https://github.com/miere/rax-rs", tag = "0.12.0" }
+rax = { git = "https://github.com/miere/rax-rs", tag = "0.14.0" }
 ```
+
+## 0.14.0
+
+- A plan may list its steps, so a gateway can track them as progress once it is approved.
 
 ## 0.13.0
 
