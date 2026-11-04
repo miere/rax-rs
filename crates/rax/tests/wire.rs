@@ -4,7 +4,7 @@ use rax::credential::CredentialRenewal;
 use rax::error::{ProviderFailure, RpcFailure};
 use rax::event::StopReason;
 use rax::frame::{Frame, FrameError, ResumeOutcome};
-use rax::interaction::{DisplayAnswer, DisplayOutcome, SignInState};
+use rax::interaction::{DisplayAnswer, DisplayOutcome, PlanRequest, SignInState};
 use rax::local_file::{
     LOCAL_FILE_FORMAT, LocalFileTransfer, ReadLocalFile, replace_local_files, takes_local_files,
 };
@@ -1137,4 +1137,22 @@ fn a_node_with_nothing_open_is_idle() {
         background_tasks: 1,
     };
     assert!(!task.is_idle());
+}
+
+#[test]
+fn a_plan_may_list_its_steps() {
+    let plan = |steps: Vec<String>| PlanRequest {
+        id: "p1".into(),
+        title: None,
+        plan: "1. Read\n2. Fix".into(),
+        steps,
+    };
+    assert_wire(
+        &plan(vec![]),
+        json!({"id": "p1", "plan": "1. Read\n2. Fix"}),
+    );
+    assert_wire(
+        &plan(vec!["Read".into(), "Fix".into()]),
+        json!({"id": "p1", "plan": "1. Read\n2. Fix", "steps": ["Read", "Fix"]}),
+    );
 }
