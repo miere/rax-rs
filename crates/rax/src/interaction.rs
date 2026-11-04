@@ -40,6 +40,9 @@ pub struct PlanRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub plan: String,
+    /// The plan's steps, one line each, for a gateway that tracks progress once it is approved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
