@@ -4,8 +4,13 @@ Every crate in this workspace shares one version, and one tag covers them all. W
 minor bump is a breaking change. Depend on a tag:
 
 ```toml
-rax = { git = "https://github.com/miere/rax-rs", tag = "0.14.0" }
+rax = { git = "https://github.com/miere/rax-rs", tag = "0.15.0" }
 ```
+
+## 0.15.0
+
+- A gateway tool may carry hints for the node's agent in `meta`, which a node passes on as
+  the tool's MCP `_meta`.
 
 ## 0.14.0
 
