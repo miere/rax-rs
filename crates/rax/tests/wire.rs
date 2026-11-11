@@ -747,6 +747,7 @@ fn a_gateway_publishes_its_tools_at_initialize() {
                             description: "Read a message from a Slack link.".into(),
                             input_schema: Some(json!({"type": "object"})),
                             kind: ToolKind::Read,
+                            meta: None,
                         }],
                     }),
                     ..Default::default()
@@ -872,13 +873,33 @@ fn a_tool_the_gateway_never_published_is_forbidden() {
 }
 
 #[test]
-fn a_tool_taking_no_arguments_omits_both_optional_fields() {
+fn a_tool_carries_its_agent_hints_as_meta() {
+    assert_wire(
+        &ToolDef {
+            name: "name_thread".into(),
+            description: "Name the conversation.".into(),
+            input_schema: None,
+            kind: ToolKind::Edit,
+            meta: Some(json!({"anthropic/alwaysLoad": true})),
+        },
+        json!({
+            "name": "name_thread",
+            "description": "Name the conversation.",
+            "kind": "edit",
+            "meta": {"anthropic/alwaysLoad": true},
+        }),
+    );
+}
+
+#[test]
+fn a_tool_taking_no_arguments_omits_every_optional_field() {
     assert_wire(
         &ToolDef {
             name: "speak".into(),
             description: "Say something out loud.".into(),
             input_schema: None,
             kind: ToolKind::Other,
+            meta: None,
         },
         json!({"name": "speak", "description": "Say something out loud.", "kind": "other"}),
     );
@@ -1003,6 +1024,7 @@ fn a_session_opens_with_the_tool_groups_it_will_see() {
                             description: "Attach a file to the thread.".into(),
                             input_schema: Some(json!({"type": "object"})),
                             kind: ToolKind::Edit,
+                            meta: None,
                         }],
                     },
                     ToolGroup {
@@ -1012,6 +1034,7 @@ fn a_session_opens_with_the_tool_groups_it_will_see() {
                             description: "Read the open document.".into(),
                             input_schema: None,
                             kind: ToolKind::Read,
+                            meta: None,
                         }],
                     },
                 ],

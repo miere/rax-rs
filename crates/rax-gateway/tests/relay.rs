@@ -312,6 +312,7 @@ fn editor_group() -> ToolGroup {
             description: "Reads an open document".into(),
             input_schema: Some(serde_json::json!({"type": "object"})),
             kind: ToolKind::Read,
+            meta: None,
         }],
     }
 }
