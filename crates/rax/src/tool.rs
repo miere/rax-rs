@@ -85,6 +85,11 @@ pub struct ToolDef {
     pub input_schema: Option<Value>,
     #[serde(default)]
     pub kind: ToolKind,
+    /// Hints for the agent the node publishes the tool to, such as Claude Code's
+    /// `anthropic/alwaysLoad`. A node passes them on untouched as the tool's MCP `_meta`; RAX gives
+    /// them no meaning of its own. Absent means none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Value>,
 }
 
 /// Runs one tool a gateway lent. A gateway serves only groups the session was opened with, so a
