@@ -249,17 +249,21 @@ fn serving<'a>(
 /// Whether or not their owners let this person in. Own nodes shadow everyone else's entirely:
 /// somebody with a machine of their own never lands on another person's, so neither may the
 /// picker put them there.
+///
+/// A node whose credential is no longer live is never a candidate, even while its link is still
+/// open: closing the link is up to whoever replaced the snapshot, and routing must not wait on it.
 fn candidates<'a>(
     user: &UserId,
     access: &Snapshot,
     nodes: &'a HashMap<String, Entry>,
 ) -> impl Iterator<Item = &'a Entry> {
-    let own_live = nodes
-        .values()
-        .any(|entry| entry.node.connected && &entry.node.owner == user);
+    let own_live = nodes.values().any(|entry| {
+        entry.node.connected && &entry.node.owner == user && access.is_live(&entry.node.selector)
+    });
     nodes.values().filter(move |entry| {
         entry.node.connected
             && (!own_live || &entry.node.owner == user)
+            && access.is_live(&entry.node.selector)
             && access.is_enabled(&entry.node.selector)
     })
 }
