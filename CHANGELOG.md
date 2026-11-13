@@ -4,8 +4,19 @@ Every crate in this workspace shares one version, and one tag covers them all. W
 minor bump is a breaking change. Depend on a tag:
 
 ```toml
-rax = { git = "https://github.com/miere/rax-rs", tag = "0.15.1" }
+rax = { git = "https://github.com/miere/rax-rs", tag = "0.16.0" }
 ```
+
+## 0.16.0
+
+- A tool rule may carry a pattern, as in `Bash(git (status|diff))`, matched whole against the
+  call's command, path, URL or input. A pattern never allows a chained shell command unless it
+  spells the command out.
+- Owners keep a denylist beside the whitelist, and a matching deny rule wins.
+- `allowed-whitelist` is the default tool mode. `policy::seed` starts an owner with no rules on a
+  read-only whitelist, and `Store::has_tool_rules` says whether they have rules.
+- Breaking: `policy::rule` takes the `ToolCall`, and `Store` gains `deny_tool`, `undeny_tool`
+  and `has_tool_rules`.
 
 ## 0.15.1
 
