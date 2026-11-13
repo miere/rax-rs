@@ -83,13 +83,16 @@ pub struct Grant {
 }
 
 /// Settings that belong to one person. `allowed` pre-authorises them on the admin's nodes; the
-/// tool mode and whitelist govern the tools agents use on the nodes they own.
+/// tool mode and the rules govern the tools agents use on the nodes they own. Each rule is a
+/// [`ToolRule`](crate::rules::ToolRule) as written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserConfig {
     pub user: UserId,
     pub allowed: bool,
     pub tool_mode: ToolMode,
     pub whitelist: BTreeSet<String>,
+    /// Rules for calls refused without asking, which win over the whitelist.
+    pub denylist: BTreeSet<String>,
 }
 
 impl UserConfig {
@@ -99,16 +102,17 @@ impl UserConfig {
             allowed: false,
             tool_mode: ToolMode::default(),
             whitelist: BTreeSet::new(),
+            denylist: BTreeSet::new(),
         }
     }
 }
 
-/// How a node owner's tools are ruled on. Under `AllowedWhitelist`, a tool off the whitelist
-/// waits for the owner's approval.
+/// How a node owner's tools are ruled on. Under `AllowedWhitelist`, the default, a call the
+/// rules do not decide waits for the owner's approval.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum ToolMode {
-    #[default]
     AlwaysAllowed,
+    #[default]
     AllowedWhitelist,
     Denied,
 }

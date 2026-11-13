@@ -653,7 +653,7 @@ impl Relay {
         tool_call: ToolCall,
     ) -> Option<Event> {
         let rules = policy::rules(&*self.inner.store, &node.owner).await;
-        match policy::rule(&self.inner.settings, &rules, &tool_call.name) {
+        match policy::rule(&self.inner.settings, &rules, &tool_call) {
             Ruling::Ask if bridge.owner == node.owner => {
                 lock(&bridge.verdicts).insert(tool_call.id.clone(), node.link.clone());
                 Some(Event::ToolCall { tool_call })

@@ -1,10 +1,11 @@
 //! How a node owner's tool rules decide a call, wherever the call is shown: in an embedder's own
 //! conversation or in a client bridged over RAX. Only the asking differs, so both ask this first.
 
-use rax::tool::{Decision, DeniedBy};
+use rax::tool::{Decision, DeniedBy, ToolCall};
 
+use crate::rules::{READ_ONLY_TOOLS, ToolRule};
 use crate::settings::Settings;
-use crate::store::{Store, ToolMode, UserConfig, UserId};
+use crate::store::{self, Store, ToolMode, UserConfig, UserId};
 
 /// The tools for reaching the people in the conversation. They do nothing to the owner's
 /// machine, so asking the owner's permission to ask them a question helps nobody. An embedder
@@ -38,19 +39,60 @@ pub async fn rules(store: &dyn Store, owner: &UserId) -> UserConfig {
     }
 }
 
-pub fn rule(settings: &Settings, config: &UserConfig, tool: &str) -> Ruling {
+/// Under `AllowedWhitelist` a deny rule that matches the call wins over an allow rule that does,
+/// and a call neither matches is put to a person. A stored rule that no longer parses matches
+/// nothing.
+pub fn rule(settings: &Settings, config: &UserConfig, call: &ToolCall) -> Ruling {
+    if talks_to_people(settings, &call.name) {
+        return Ruling::Decided(Decision::Allow);
+    }
     match config.tool_mode {
-        _ if talks_to_people(settings, tool) => Ruling::Decided(Decision::Allow),
         ToolMode::AlwaysAllowed => Ruling::Decided(Decision::Allow),
-        ToolMode::AllowedWhitelist if config.whitelist.contains(tool) => {
-            Ruling::Decided(Decision::Allow)
-        }
         ToolMode::Denied => Ruling::Decided(Decision::Deny {
             by: DeniedBy::Policy,
             reason: Some("The node's owner does not allow tools.".into()),
         }),
+        ToolMode::AllowedWhitelist if any(&config.denylist, |rule| rule.denies(call)) => {
+            Ruling::Decided(Decision::Deny {
+                by: DeniedBy::Policy,
+                reason: Some("The node's owner does not allow this.".into()),
+            })
+        }
+        ToolMode::AllowedWhitelist if any(&config.whitelist, |rule| rule.allows(call)) => {
+            Ruling::Decided(Decision::Allow)
+        }
         ToolMode::AllowedWhitelist => Ruling::Ask,
     }
+}
+
+fn any<'a>(
+    rules: impl IntoIterator<Item = &'a String>,
+    matches: impl Fn(&ToolRule) -> bool,
+) -> bool {
+    rules
+        .into_iter()
+        .filter_map(|raw| match ToolRule::parse(raw) {
+            Ok(rule) => Some(rule),
+            Err(err) => {
+                tracing::warn!(rule = %raw, error = %err, "skipping a tool rule that does not parse");
+                None
+            }
+        })
+        .any(|rule| matches(&rule))
+}
+
+/// Gives an owner who has no tool rules yet the default mode and the read-only whitelist, so the
+/// whitelist starts as rules they can see and edit. Returns whether it did; an owner with rules of
+/// their own keeps them.
+pub async fn seed(store: &dyn Store, owner: &UserId) -> store::Result<bool> {
+    if store.has_tool_rules(owner).await? {
+        return Ok(false);
+    }
+    store.set_tool_mode(owner, ToolMode::default()).await?;
+    for tool in READ_ONLY_TOOLS {
+        store.whitelist_tool(owner, tool).await?;
+    }
+    Ok(true)
 }
 
 fn talks_to_people(settings: &Settings, tool: &str) -> bool {
@@ -63,6 +105,10 @@ mod tests {
 
     use super::*;
 
+    use rax::id::ToolCallId;
+    use rax::tool::ToolKind;
+    use serde_json::json;
+
     fn config(mode: ToolMode, whitelist: &[&str]) -> UserConfig {
         UserConfig {
             tool_mode: mode,
@@ -71,8 +117,19 @@ mod tests {
         }
     }
 
+    fn call(tool: &str) -> ToolCall {
+        ToolCall {
+            id: ToolCallId("call-1".into()),
+            name: tool.into(),
+            title: None,
+            kind: ToolKind::default(),
+            input: Some(json!({ "command": "git status" })),
+            content: Vec::new(),
+        }
+    }
+
     fn rule(config: &UserConfig, tool: &str) -> Ruling {
-        super::rule(&Settings::default(), config, tool)
+        super::rule(&Settings::default(), config, &call(tool))
     }
 
     #[test]
@@ -108,8 +165,36 @@ mod tests {
             Ruling::Decided(Decision::Deny { .. })
         ));
         assert_eq!(
-            super::rule(&settings, &denied, "mcp__chat__attach"),
+            super::rule(&settings, &denied, &call("mcp__chat__attach")),
             Ruling::Decided(Decision::Allow)
         );
+    }
+
+    #[test]
+    fn a_new_owner_is_asked_about_anything_off_the_whitelist() {
+        let fresh = UserConfig::new(UserId::parse("U0OWNER01").unwrap());
+        assert_eq!(fresh.tool_mode, ToolMode::AllowedWhitelist);
+        assert_eq!(rule(&fresh, "Bash"), Ruling::Ask);
+    }
+
+    #[test]
+    fn a_deny_rule_wins_over_an_allow_rule_and_patterns_narrow_both() {
+        let mut rules = config(ToolMode::AllowedWhitelist, &["Bash"]);
+        rules.denylist.insert("Bash(git .*)".into());
+        assert!(matches!(
+            rule(&rules, "Bash"),
+            Ruling::Decided(Decision::Deny { .. })
+        ));
+        let narrow = config(ToolMode::AllowedWhitelist, &["Bash(git status)"]);
+        assert_eq!(rule(&narrow, "Bash"), Ruling::Decided(Decision::Allow));
+        let other = config(ToolMode::AllowedWhitelist, &["Bash(git diff)", "Bash(("]);
+        assert_eq!(rule(&other, "Bash"), Ruling::Ask);
+    }
+
+    #[test]
+    fn the_modes_ignore_the_lists() {
+        let mut rules = config(ToolMode::AlwaysAllowed, &[]);
+        rules.denylist.insert("Bash".into());
+        assert_eq!(rule(&rules, "Bash"), Ruling::Decided(Decision::Allow));
     }
 }

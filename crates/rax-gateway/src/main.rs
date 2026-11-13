@@ -128,20 +128,31 @@ enum ClientCommand {
 
 #[derive(Debug, Subcommand)]
 enum ToolsCommand {
-    /// always-allowed (the default), allowed-whitelist or denied. Nobody can be asked here, so
-    /// under allowed-whitelist a tool off the whitelist is denied to everyone but the owner's
-    /// own clients
+    /// allowed-whitelist (the default), always-allowed or denied. Nobody can be asked here, so
+    /// under allowed-whitelist a call the rules do not allow is denied to everyone but the
+    /// owner's own clients
     Mode {
         user: String,
         mode: String,
     },
-    /// Put a tool on the owner's whitelist
+    /// Put a rule on the owner's whitelist: a tool's name, or a name and a pattern its call must
+    /// match whole, as in 'Bash(git (status|diff))'
     Allow {
         user: String,
         tool: String,
     },
-    /// Take a tool off the owner's whitelist
+    /// Take a rule off the owner's whitelist
     Disallow {
+        user: String,
+        tool: String,
+    },
+    /// Put a rule on the owner's denylist, which wins over the whitelist
+    Deny {
+        user: String,
+        tool: String,
+    },
+    /// Take a rule off the owner's denylist
+    Undeny {
         user: String,
         tool: String,
     },
@@ -372,6 +383,7 @@ async fn admin(store: &dyn Store, command: Command) -> Result<String, String> {
         }
         Command::Tools(ToolsCommand::Allow { user, tool }) => {
             let user = person(&user)?;
+            let tool = tool_rule(&tool)?;
             store.whitelist_tool(&user, &tool).await.map_err(failed)?;
             format!("{tool} is on {user}'s whitelist")
         }
@@ -380,15 +392,36 @@ async fn admin(store: &dyn Store, command: Command) -> Result<String, String> {
             store.unwhitelist_tool(&user, &tool).await.map_err(failed)?;
             format!("{tool} is off {user}'s whitelist")
         }
+        Command::Tools(ToolsCommand::Deny { user, tool }) => {
+            let user = person(&user)?;
+            let tool = tool_rule(&tool)?;
+            store.deny_tool(&user, &tool).await.map_err(failed)?;
+            format!("{tool} is on {user}'s denylist")
+        }
+        Command::Tools(ToolsCommand::Undeny { user, tool }) => {
+            let user = person(&user)?;
+            store.undeny_tool(&user, &tool).await.map_err(failed)?;
+            format!("{tool} is off {user}'s denylist")
+        }
         Command::Tools(ToolsCommand::Show { user }) => {
             let config = store.user(&person(&user)?).await.map_err(failed)?;
             let mut out = format!("mode\t{}", config.tool_mode);
             for tool in config.whitelist {
                 out.push_str(&format!("\nallowed\t{tool}"));
             }
+            for tool in config.denylist {
+                out.push_str(&format!("\ndenied\t{tool}"));
+            }
             out
         }
     })
+}
+
+/// A rule as it is kept: checked, and written the one way it reads back.
+fn tool_rule(raw: &str) -> Result<String, String> {
+    raw.parse::<rax_gateway::rules::ToolRule>()
+        .map(|rule| rule.to_string())
+        .map_err(|err| err.to_string())
 }
 
 fn lines(rows: impl Iterator<Item = String>) -> String {
