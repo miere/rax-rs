@@ -181,6 +181,28 @@ async fn a_granted_node_attaches_and_is_assigned_to_its_owner() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_node_whose_credential_is_revoked_is_not_assigned_while_its_link_is_open() {
+    let mut rig = rig().await;
+    let (selector, token) = rig.mint("U0PERSON1").await;
+    let (node, mut events) = rig.dial(&token);
+    answer_initialize(&node, &mut events).await;
+    within(rig.hub.changes.recv()).await.unwrap();
+
+    // Replaced without closing anything, so the link stays open.
+    rig.store.revoke_node_token(&selector).await.unwrap();
+    rig.access.replace(
+        Snapshot::load(&*rig.store, &Settings::default())
+            .await
+            .unwrap(),
+    );
+    let snapshot = rig.access.snapshot();
+    assert!(rig.fleet.get(&selector).is_some_and(|n| n.connected));
+    assert!(rig.fleet.assign(&user("U0PERSON1"), &snapshot).is_none());
+    node.close().await;
+    rig.shutdown.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_revoked_grant_disconnects_the_node_and_its_redial_is_refused() {
     let mut rig = rig().await;
     let (selector, token) = rig.mint("U0PERSON1").await;
