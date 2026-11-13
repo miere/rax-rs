@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS tool_whitelist (
     tool TEXT NOT NULL,
     PRIMARY KEY (user_id, tool)
 );
+CREATE TABLE IF NOT EXISTS tool_denylist (
+    user_id TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    PRIMARY KEY (user_id, tool)
+);
 CREATE TABLE IF NOT EXISTS node_tokens (
     selector TEXT PRIMARY KEY,
     secret_hash TEXT NOT NULL,
@@ -209,6 +214,10 @@ fn user_config(db: &Connection, user: UserId) -> Result<UserConfig> {
     let whitelist = query
         .query_map([user.as_str()], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<_>>()?;
+    let mut query = db.prepare("SELECT tool FROM tool_denylist WHERE user_id = ?1")?;
+    let denylist = query
+        .query_map([user.as_str()], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<_>>()?;
     let tool_mode = match mode {
         Some(raw) => raw
             .parse()
@@ -220,6 +229,7 @@ fn user_config(db: &Connection, user: UserId) -> Result<UserConfig> {
         allowed: allowed.unwrap_or(false),
         tool_mode,
         whitelist,
+        denylist,
     })
 }
 
@@ -363,7 +373,8 @@ impl Store for SqliteStore {
         self.run(move |db| {
             let mut query = db.prepare(
                 "SELECT user_id FROM users UNION SELECT user_id FROM tool_modes
-                 UNION SELECT user_id FROM tool_whitelist ORDER BY user_id",
+                 UNION SELECT user_id FROM tool_whitelist
+                 UNION SELECT user_id FROM tool_denylist ORDER BY user_id",
             )?;
             let ids = query
                 .query_map([], |row| {
@@ -411,6 +422,42 @@ impl Store for SqliteStore {
                 "DELETE FROM tool_whitelist WHERE user_id = ?1 AND tool = ?2",
                 params![user, tool],
             )? > 0)
+        })
+        .await
+    }
+
+    async fn deny_tool(&self, user: &UserId, tool: &str) -> Result<bool> {
+        let (user, tool) = (user.to_string(), tool.to_owned());
+        self.run(move |db| {
+            Ok(db.execute(
+                "INSERT INTO tool_denylist (user_id, tool) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+                params![user, tool],
+            )? > 0)
+        })
+        .await
+    }
+
+    async fn undeny_tool(&self, user: &UserId, tool: &str) -> Result<bool> {
+        let (user, tool) = (user.to_string(), tool.to_owned());
+        self.run(move |db| {
+            Ok(db.execute(
+                "DELETE FROM tool_denylist WHERE user_id = ?1 AND tool = ?2",
+                params![user, tool],
+            )? > 0)
+        })
+        .await
+    }
+
+    async fn has_tool_rules(&self, user: &UserId) -> Result<bool> {
+        let user = user.to_string();
+        self.run(move |db| {
+            Ok(db.query_row(
+                "SELECT EXISTS (SELECT 1 FROM tool_modes WHERE user_id = ?1)
+                     OR EXISTS (SELECT 1 FROM tool_whitelist WHERE user_id = ?1)
+                     OR EXISTS (SELECT 1 FROM tool_denylist WHERE user_id = ?1)",
+                [user],
+                |row| row.get(0),
+            )?)
         })
         .await
     }

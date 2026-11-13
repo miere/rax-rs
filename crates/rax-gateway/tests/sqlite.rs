@@ -32,6 +32,8 @@ contract!(
     approving_twice_keeps_the_first_approval_and_revoking_removes_it,
     a_person_is_not_pre_authorised_until_the_admin_says_so,
     a_node_owners_tool_rules_are_kept_apart_from_the_rest_of_their_settings,
+    any_rule_or_mode_counts_as_an_owners_own_rules,
+    seeding_gives_an_owner_without_rules_the_read_only_whitelist,
     a_token_is_revoked_once,
     a_user_token_is_kept_apart_from_node_tokens_and_revoked_once,
 );

@@ -13,6 +13,7 @@ pub mod port;
 pub mod principal;
 pub mod relay;
 pub mod roles;
+pub mod rules;
 pub mod settings;
 pub mod store;
 pub mod token;

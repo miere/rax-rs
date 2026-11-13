@@ -86,6 +86,12 @@ pub trait Store: Send + Sync + 'static {
     async fn whitelist_tool(&self, user: &UserId, tool: &str) -> Result<bool>;
     /// Returns whether the tool was on the owner's whitelist.
     async fn unwhitelist_tool(&self, user: &UserId, tool: &str) -> Result<bool>;
+    /// Returns whether the rule was not on the owner's denylist before.
+    async fn deny_tool(&self, user: &UserId, tool: &str) -> Result<bool>;
+    /// Returns whether the rule was on the owner's denylist.
+    async fn undeny_tool(&self, user: &UserId, tool: &str) -> Result<bool>;
+    /// Whether the owner has a tool mode or any rule of their own, rather than the defaults.
+    async fn has_tool_rules(&self, user: &UserId) -> Result<bool>;
 
     async fn node_tokens(&self) -> Result<Vec<NodeToken>>;
     async fn add_node_token(&self, token: &NodeToken) -> Result<()>;

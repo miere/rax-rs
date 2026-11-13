@@ -48,8 +48,10 @@ pub async fn a_node_owners_tool_rules_are_kept_apart_from_the_rest_of_their_sett
 ) {
     let owner = user("U0PERSON1");
     let fresh = store.user(&owner).await.unwrap();
-    assert_eq!(fresh.tool_mode, ToolMode::AlwaysAllowed);
+    assert_eq!(fresh.tool_mode, ToolMode::AllowedWhitelist);
     assert!(fresh.whitelist.is_empty());
+    assert!(fresh.denylist.is_empty());
+    assert!(!store.has_tool_rules(&owner).await.unwrap());
 
     store
         .set_tool_mode(&owner, ToolMode::AllowedWhitelist)
@@ -78,15 +80,65 @@ pub async fn a_node_owners_tool_rules_are_kept_apart_from_the_rest_of_their_sett
     );
     assert!(store.unwhitelist_tool(&owner, "Bash").await.unwrap());
     assert!(!store.unwhitelist_tool(&owner, "Bash").await.unwrap());
+    assert!(store.deny_tool(&owner, "Bash(rm .*)").await.unwrap());
+    assert!(!store.deny_tool(&owner, "Bash(rm .*)").await.unwrap());
+    assert!(store.deny_tool(&owner, "WebFetch").await.unwrap());
+    assert!(store.undeny_tool(&owner, "WebFetch").await.unwrap());
+    assert!(!store.undeny_tool(&owner, "WebFetch").await.unwrap());
     store.set_tool_mode(&owner, ToolMode::Denied).await.unwrap();
     let users = store.users().await.unwrap();
     assert_eq!(users.len(), 1);
     assert_eq!(users[0].tool_mode, ToolMode::Denied);
     assert_eq!(users[0].whitelist.len(), 1);
     assert_eq!(
+        users[0]
+            .denylist
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["Bash(rm .*)"]
+    );
+    assert_eq!(
         store.user(&user("U0SOMEONE")).await.unwrap(),
         UserConfig::new(user("U0SOMEONE"))
     );
+}
+
+pub async fn any_rule_or_mode_counts_as_an_owners_own_rules(store: &dyn Store) {
+    let (moded, allowing, denying) = (user("U0PERSON1"), user("U0PERSON2"), user("U0PERSON3"));
+    store.set_allowed(&moded, true).await.unwrap();
+    assert!(
+        !store.has_tool_rules(&moded).await.unwrap(),
+        "being allowed is not a rule"
+    );
+    store
+        .set_tool_mode(&moded, ToolMode::AlwaysAllowed)
+        .await
+        .unwrap();
+    store.whitelist_tool(&allowing, "Read").await.unwrap();
+    store.deny_tool(&denying, "Bash").await.unwrap();
+    for owner in [&moded, &allowing, &denying] {
+        assert!(store.has_tool_rules(owner).await.unwrap(), "{owner}");
+    }
+    assert_eq!(store.users().await.unwrap().len(), 3);
+}
+
+pub async fn seeding_gives_an_owner_without_rules_the_read_only_whitelist(store: &dyn Store) {
+    let (fresh, chosen) = (user("U0PERSON1"), user("U0PERSON2"));
+    store
+        .set_tool_mode(&chosen, ToolMode::AlwaysAllowed)
+        .await
+        .unwrap();
+    assert!(rax_gateway::policy::seed(store, &fresh).await.unwrap());
+    assert!(!rax_gateway::policy::seed(store, &fresh).await.unwrap());
+    assert!(!rax_gateway::policy::seed(store, &chosen).await.unwrap());
+    let seeded = store.user(&fresh).await.unwrap();
+    assert_eq!(seeded.tool_mode, ToolMode::AllowedWhitelist);
+    assert!(seeded.whitelist.contains("Read"));
+    assert!(!seeded.whitelist.contains("Bash"));
+    let kept = store.user(&chosen).await.unwrap();
+    assert_eq!(kept.tool_mode, ToolMode::AlwaysAllowed);
+    assert!(kept.whitelist.is_empty());
 }
 
 pub async fn a_token_is_revoked_once(store: &dyn Store) {
