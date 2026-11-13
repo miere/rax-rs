@@ -4,8 +4,13 @@ Every crate in this workspace shares one version, and one tag covers them all. W
 minor bump is a breaking change. Depend on a tag:
 
 ```toml
-rax = { git = "https://github.com/miere/rax-rs", tag = "0.15.0" }
+rax = { git = "https://github.com/miere/rax-rs", tag = "0.15.1" }
 ```
+
+## 0.15.1
+
+- The fleet never assigns a node whose credential is no longer live, even while its link is
+  still open, and such a node no longer shadows other people's.
 
 ## 0.15.0
 
