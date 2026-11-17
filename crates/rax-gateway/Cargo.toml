@@ -22,6 +22,7 @@ required-features = ["bin"]
 [features]
 default = ["sqlite"]
 sqlite = ["dep:rusqlite"]
+firestore = ["dep:gcp_auth", "dep:reqwest"]
 bin = ["sqlite", "dep:clap", "dep:toml", "dep:tracing-subscriber", "tokio/signal"]
 
 [dependencies]
@@ -30,10 +31,12 @@ rax-tokio = { path = "../rax-tokio" }
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 base64 = "0.22"
+gcp_auth = { version = "0.12", optional = true }
 hex = "0.4"
 rand = "0.10"
 regex = "1"
 regex-syntax = "0.8"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"], optional = true }
 rusqlite = { version = "0.37", features = ["bundled"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

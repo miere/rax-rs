@@ -1,6 +1,8 @@
 //! The gateway's configuration: who administers it, who may join, the nodes they run and the
 //! clients they hold. Backends differ only in how far their leader lock reaches.
 
+#[cfg(feature = "firestore")]
+pub mod firestore;
 mod leader;
 mod model;
 #[cfg(feature = "sqlite")]
@@ -8,6 +10,10 @@ mod sqlite;
 
 use async_trait::async_trait;
 
+#[cfg(feature = "firestore")]
+pub use firestore::{FirestoreOptions, FirestoreStore};
+#[cfg(feature = "firestore")]
+pub use leader::FirestoreLeader;
 #[cfg(feature = "sqlite")]
 pub use leader::SqliteLeader;
 pub use leader::{Leader, Lease};
@@ -32,7 +38,7 @@ pub enum StoreError {
     /// Another gateway holds this database; running two would serve every node twice.
     #[error("store: another gateway already holds {0}")]
     Locked(std::path::PathBuf),
-    /// Whatever a backend outside this crate reports, already worded, such as `firestore: …`.
+    /// A backend's own failure, already worded, such as `firestore: …`.
     #[error("store: {0}")]
     Backend(String),
     /// A guarded write lost to a concurrent one; callers that race on purpose treat it as a no.
