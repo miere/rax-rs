@@ -16,6 +16,12 @@ agent node speaks to a chat gateway. The spec lives in that repository; this one
 cargo test --workspace --all-features
 ```
 
+The Firestore tests skip unless `FIRESTORE_EMULATOR_HOST` points at an emulator:
+
+```
+FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 cargo test -p rax-gateway --features firestore
+```
+
 ## Running a gateway on its own
 
 ```
@@ -54,4 +60,7 @@ owner's tool rules (`rax-gateway tools …`) allow it, and a node cannot be show
 
 Implement `store::Store` and `store::Leader` to keep the data elsewhere; the SQLite ones sit behind
 the default `sqlite` feature, and `SqliteStore::extend` lets you keep tables of your own beside
-the gateway's.
+the gateway's. Firestore ones, for a cluster of gateways, sit behind the `firestore` feature, which
+is off by default: `FirestoreStore` keeps everything under `<collection>/gateway`, with the
+collection yours to choose, and `FirestoreStore::get`, `list`, `query_equal` and `commit` let you
+keep documents of your own under the same root.

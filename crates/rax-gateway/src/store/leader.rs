@@ -5,10 +5,14 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
+#[cfg(feature = "firestore")]
+use serde_json::{Value, json};
 
 use super::Result;
-#[cfg(feature = "sqlite")]
+#[cfg(any(feature = "sqlite", feature = "firestore"))]
 use super::StoreError;
+#[cfg(feature = "firestore")]
+use super::firestore::{FirestoreStore, Write, string_value};
 #[cfg(feature = "sqlite")]
 use super::sqlite::{LeaderLock, SqliteStore};
 
@@ -88,5 +92,99 @@ impl Leader for SqliteLeader {
     async fn release(&self, _lease: Lease) -> Result<()> {
         self.held().take();
         Ok(())
+    }
+}
+
+#[cfg(feature = "firestore")]
+const LEASE: &str = "leases/leader";
+
+/// A renewed lease on one document, `leases/leader` under the store's root. Every write is guarded
+/// by the update time of the read that justified it, so of two gateways racing for an expired
+/// lease exactly one wins.
+#[cfg(feature = "firestore")]
+pub struct FirestoreLeader {
+    store: FirestoreStore,
+    ttl: Duration,
+}
+
+#[cfg(feature = "firestore")]
+impl FirestoreLeader {
+    pub fn new(store: FirestoreStore, ttl: Duration) -> Self {
+        Self { store, ttl }
+    }
+
+    fn fields(&self, holder: &str) -> Value {
+        json!({
+            "holder": string_value(holder),
+            "lease_seconds": {"integerValue": self.ttl.as_secs().max(1).to_string()},
+            "released": {"booleanValue": false},
+        })
+    }
+
+    async fn write(&self, holder: &str, guarded: Write) -> Result<Option<Lease>> {
+        let write = guarded
+            .transforms(json!([{"fieldPath": "acquired_at", "setToServerValue": "REQUEST_TIME"}]));
+        match self.store.commit(vec![write]).await {
+            Ok(result) => {
+                let version = result["writeResults"][0]["updateTime"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                Ok(Some(Lease {
+                    holder: holder.to_owned(),
+                    version,
+                }))
+            }
+            Err(StoreError::Conflict(_)) => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+}
+
+#[cfg(feature = "firestore")]
+#[async_trait]
+impl Leader for FirestoreLeader {
+    fn ttl(&self) -> Duration {
+        self.ttl
+    }
+
+    async fn acquire(&self, holder: &str) -> Result<Option<Lease>> {
+        let (current, read_time) = self.store.read_with_time(LEASE).await?;
+        let update = self.store.update(LEASE, self.fields(holder));
+        let Some(doc) = current else {
+            return self.write(holder, update.if_absent()).await;
+        };
+        let held_by_me = doc.string("holder").ok().as_deref() == Some(holder);
+        let expired = doc.bool("released")
+            || match (doc.time("acquired_at")?, doc.integer("lease_seconds")) {
+                (Some(acquired), Some(seconds)) => {
+                    read_time >= acquired + time::Duration::seconds(seconds)
+                }
+                _ => true,
+            };
+        if held_by_me || expired {
+            self.write(holder, update.if_unchanged(doc.update_time()))
+                .await
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn renew(&self, lease: &Lease) -> Result<Option<Lease>> {
+        let update = self.store.update(LEASE, self.fields(&lease.holder));
+        self.write(&lease.holder, update.if_unchanged(&lease.version))
+            .await
+    }
+
+    async fn release(&self, lease: Lease) -> Result<()> {
+        let write = self
+            .store
+            .update(LEASE, json!({"released": {"booleanValue": true}}))
+            .mask(["released"])
+            .if_unchanged(&lease.version);
+        match self.store.commit(vec![write]).await {
+            Ok(_) | Err(StoreError::Conflict(_)) => Ok(()),
+            Err(err) => Err(err),
+        }
     }
 }
