@@ -4,8 +4,21 @@ Every crate in this workspace shares one version, and one tag covers them all. W
 minor bump is a breaking change. Depend on a tag:
 
 ```toml
-rax = { git = "https://github.com/miere/rax-rs", tag = "0.16.0" }
+rax = { git = "https://github.com/miere/rax-rs", tag = "0.17.0" }
 ```
+
+## 0.17.0
+
+- `rax-gateway` can keep its store in Firestore, behind a new `firestore` feature that is off by
+  default, so a default build pulls in nothing from Google. `store::FirestoreStore` and
+  `store::FirestoreLeader` are Murtaugh's, moved as they were: the same documents, fields and
+  encodings, so data Murtaugh already holds reads unchanged.
+- `FirestoreOptions::new` takes the collection, which has no default: everything lives under
+  `<collection>/gateway`. `FirestoreStore::open_with` takes the embedder's `Principals`, as
+  `SqliteStore::open_with` does.
+- An embedder keeps documents of its own under the same root with `FirestoreStore`'s `get`, `list`,
+  `query_equal`, `update`, `delete` and `commit`, the `store::firestore::Document` and `Write`
+  types, and `string_value` and `timestamp_value`.
 
 ## 0.16.0
 
